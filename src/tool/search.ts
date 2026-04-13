@@ -297,6 +297,8 @@ function extractLead(content: string): string {
 
 // --- Sections ---
 
+const MAX_LISTED_SECTIONS = 12;
+
 function leafSections(sections: PageSection[]): string[] {
 	const leaves: string[] = [];
 	for (const [i, current] of sections.entries()) {
@@ -307,6 +309,15 @@ function leafSections(sections: PageSection[]): string[] {
 		}
 	}
 	return leaves;
+}
+
+function formatSections(leaves: string[]): string {
+	if (leaves.length <= MAX_LISTED_SECTIONS) {
+		return `<sections>${leaves.map(x).join(" | ")}</sections>`;
+	}
+	const shown = leaves.slice(0, MAX_LISTED_SECTIONS);
+	const more = leaves.length - MAX_LISTED_SECTIONS;
+	return `<sections>${shown.map(x).join(" | ")} (+${more} more)</sections>`;
 }
 
 const SECTION_CAP = 800;
@@ -326,32 +337,70 @@ function extractSection(wikitext: string, name: string, query?: string): string 
 	if (query && query.toLowerCase().includes(name.toLowerCase())) return full;
 	if (full.length <= SECTION_CAP) return full;
 
-	// Center a window around the midpoint of the section body (after the heading)
+	// Select complete sentences/paragraphs from the center of the section
 	const headingEnd = full.indexOf("\n");
-	const heading = headingEnd >= 0 ? full.slice(0, headingEnd + 1) : "";
+	const heading = headingEnd >= 0 ? `${full.slice(0, headingEnd + 1)}` : "";
 	const body = headingEnd >= 0 ? full.slice(headingEnd + 1) : full;
 	const bodyBudget = SECTION_CAP - heading.length;
 	if (body.length <= bodyBudget) return full;
 
-	const mid = Math.floor(body.length / 2);
-	let winStart = Math.max(0, mid - Math.floor(bodyBudget / 2));
-	let winEnd = Math.min(body.length, winStart + bodyBudget);
-	// Adjust if we hit the end
-	if (winEnd === body.length) winStart = Math.max(0, winEnd - bodyBudget);
+	const chunks = splitChunks(body);
+	if (chunks.length === 0) return heading;
 
-	// Snap to line boundaries to avoid mid-line cuts
-	if (winStart > 0) {
-		const nl = body.indexOf("\n", winStart);
-		if (nl >= 0 && nl < winStart + 80) winStart = nl + 1;
+	// Find the chunk nearest the center of the body by character offset
+	let offset = 0;
+	const offsets: number[] = [];
+	for (const c of chunks) {
+		offsets.push(offset + c.length / 2);
+		offset += c.length;
 	}
-	if (winEnd < body.length) {
-		const nl = body.lastIndexOf("\n", winEnd);
-		if (nl > winEnd - 80) winEnd = nl;
+	const bodyMid = body.length / 2;
+	let centerIdx = 0;
+	let bestDist = Infinity;
+	for (let i = 0; i < offsets.length; i++) {
+		const dist = Math.abs((offsets[i] ?? 0) - bodyMid);
+		if (dist < bestDist) {
+			bestDist = dist;
+			centerIdx = i;
+		}
 	}
 
-	const prefix = winStart > 0 ? "[...]\n" : "";
-	const suffix = winEnd < body.length ? "\n[...]" : "";
-	return `${heading}${prefix}${body.slice(winStart, winEnd).trim()}${suffix}`;
+	// Expand outward from center, alternating before/after, adding whole chunks
+	const selected = new Set<number>([centerIdx]);
+	let used = chunks[centerIdx]?.length ?? 0;
+	let lo = centerIdx - 1;
+	let hi = centerIdx + 1;
+	while (used < bodyBudget && (lo >= 0 || hi < chunks.length)) {
+		// Alternate: try before, then after
+		if (lo >= 0) {
+			const c = chunks[lo]!;
+			if (used + c.length + 2 <= bodyBudget) {
+				selected.add(lo);
+				used += c.length + 2;
+			}
+			lo--;
+		}
+		if (hi < chunks.length) {
+			const c = chunks[hi]!;
+			if (used + c.length + 2 <= bodyBudget) {
+				selected.add(hi);
+				used += c.length + 2;
+			}
+			hi++;
+		}
+		if (used >= bodyBudget) break;
+		if (lo < 0 && hi >= chunks.length) break;
+	}
+
+	const minSel = Math.min(...selected);
+	const maxSel = Math.max(...selected);
+	const parts: string[] = [];
+	for (let i = minSel; i <= maxSel; i++) {
+		if (selected.has(i) && chunks[i]) parts.push(chunks[i]);
+	}
+	const prefix = minSel > 0 ? "[...] " : "";
+	const suffix = maxSel < chunks.length - 1 ? "\n[...]" : "";
+	return `${heading}${prefix}${parts.join("\n\n")}${suffix}`;
 }
 
 function detectSections(
@@ -396,25 +445,62 @@ function cdata(text: string): string {
 	return `<![CDATA[${text.replace(/\]\]>/g, "]]]]><![CDATA[>")}]]>`;
 }
 
+/**
+ * Split text into atomic chunks that should not be broken apart.
+ * Splits on paragraph breaks first (\n\n), then within long paragraphs
+ * on sentence boundaries. Returns an array of chunks.
+ */
+function splitChunks(text: string): string[] {
+	const paragraphs = text.split(/\n\n+/);
+	const chunks: string[] = [];
+	// Sentence boundary: period/question/exclamation followed by optional
+	// closing punctuation and then a space + uppercase letter or newline.
+	// Uses a lookbehind to avoid splitting on abbreviations like "Dr." or "U.S."
+	// by requiring at least 10 chars before the split point.
+	const sentenceSplit = /([.!?]["')»\]]*)\s+(?=[A-Z\['\("])/g;
+
+	for (const para of paragraphs) {
+		if (para.length <= 300) {
+			chunks.push(para);
+			continue;
+		}
+		// Split long paragraphs into sentences
+		let last = 0;
+		sentenceSplit.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = sentenceSplit.exec(para)) !== null) {
+			const end = m.index + m[1].length;
+			chunks.push(para.slice(last, end));
+			last = end;
+		}
+		if (last < para.length) {
+			chunks.push(para.slice(last));
+		}
+	}
+	return chunks.map((c) => c.trim()).filter(Boolean);
+}
+
+/**
+ * Truncate text to fit within `limit` characters, cutting only at
+ * paragraph or sentence boundaries. Always produces complete thoughts.
+ */
 function truncate(text: string, limit: number): string {
 	if (text.length <= limit) return text;
-	const region = text.slice(0, limit);
-	// Prefer cutting at a section boundary (== header on its own line)
-	const sectionBreak = region.lastIndexOf("\n==");
-	if (sectionBreak > limit * 0.5) {
-		return `${region.slice(0, sectionBreak)}\n[truncated]`;
+	const chunks = splitChunks(text);
+	let result = "";
+	for (const chunk of chunks) {
+		const sep = result.length > 0 ? "\n\n" : "";
+		if (result.length + sep.length + chunk.length + 14 > limit) break;
+		result += sep + chunk;
 	}
-	// Next best: end of a sentence (. or .\n followed by space/newline)
-	const sentenceEnd = region.search(/\.\s[^.]*$/);
-	if (sentenceEnd > limit * 0.5) {
-		return `${region.slice(0, sentenceEnd + 1)}\n[truncated]`;
+	// If we couldn't fit even one chunk, take as much of the first as possible
+	// cutting at a word boundary
+	if (!result && chunks[0]) {
+		const c = chunks[0].slice(0, limit - 14);
+		const lastSpace = c.lastIndexOf(" ");
+		result = lastSpace > 0 ? c.slice(0, lastSpace) : c;
 	}
-	// Fallback: last newline
-	const newline = region.lastIndexOf("\n");
-	if (newline > limit * 0.5) {
-		return `${region.slice(0, newline)}\n[truncated]`;
-	}
-	return `${region}\n[truncated]`;
+	return `${result.trimEnd()}\n[truncated]`;
 }
 
 // --- Deduplication ---
@@ -490,7 +576,7 @@ async function articleResult(
 	if (seen && alreadySeen(title.title, seen)) {
 		let xml = `<result query="${x(query)}">\n`;
 		xml += `<article title="${x(title.title)}" already_returned="true">\n`;
-		xml += `<sections>${leaves.map(x).join(" | ")}</sections>\n`;
+		xml += `${formatSections(leaves)}\n`;
 		xml += "</article>\n</result>";
 		return xml;
 	}
@@ -502,7 +588,7 @@ async function articleResult(
 	xml += `<article title="${x(title.title)}"`;
 	if (title.type !== "standard") xml += ` type="${x(title.type)}"`;
 	xml += `>\n`;
-	xml += `<sections>${leaves.map(x).join(" | ")}</sections>\n`;
+	xml += `${formatSections(leaves)}\n`;
 
 	const close = "</article>\n</result>";
 	const budget = CHAR_LIMIT - xml.length - close.length - 25;
@@ -536,7 +622,7 @@ async function searchResults(query: string, search: SearchResponse, seen?: SeenP
 		return `${xml} /></result>`;
 	}
 
-	const top = search.hits.slice(0, 5);
+	const top = search.hits.slice(0, 3);
 	const pages = await Promise.all(top.map((h) => getPageContent(h.title).catch(() => null)));
 
 	let xml = `<result query="${x(query)}" total="${search.totalHits}"`;
@@ -561,7 +647,7 @@ async function searchResults(query: string, search: SearchResponse, seen?: SeenP
 
 		const parsed = parseWikitext(page.wikitext);
 		const leaves = leafSections(page.sections);
-		const secList = `<sections>${leaves.map(x).join(" | ")}</sections>\n`;
+		const secList = `${formatSections(leaves)}\n`;
 
 		let tag = `<page title="${x(hit.title)}"`;
 		if (hit.sectionTitle) tag += ` section="${x(hit.sectionTitle)}"`;
@@ -579,19 +665,14 @@ async function searchResults(query: string, search: SearchResponse, seen?: SeenP
 		if (parsed.length <= contentBudget) {
 			xml += `${tag}${secList}<content>${cdata(`\n${parsed}\n`)}</content>\n${closeTag}`;
 		} else {
+			// Always include lead section, plus matched section if different
+			const lead = extractLead(parsed);
+			const section = hit.sectionTitle ? extractSection(parsed, hit.sectionTitle, query) : "";
 			let body: string;
-			if (i < 3) {
-				// Always include lead section for top 3 results
-				const lead = extractLead(parsed);
-				const section = hit.sectionTitle ? extractSection(parsed, hit.sectionTitle, query) : "";
-				if (section && section !== lead) {
-					body = `${lead}\n\n${section}`;
-				} else {
-					body = lead || parsed;
-				}
+			if (section && section !== lead) {
+				body = `${lead}\n\n${section}`;
 			} else {
-				const section = hit.sectionTitle ? extractSection(parsed, hit.sectionTitle, query) : "";
-				body = section || parsed;
+				body = lead || parsed;
 			}
 			xml += `${tag}${secList}<content>${cdata(`\n${truncate(body, contentBudget)}\n`)}</content>\n${closeTag}`;
 		}

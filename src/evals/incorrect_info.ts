@@ -4,8 +4,9 @@
 
 import {
 	type AgentResult,
+	createSeenContent,
+	createToolHandler,
 	DEFAULT_MODEL,
-	defaultToolHandler,
 	extractFinalAnswer,
 	initLog,
 	runAgentLoop,
@@ -254,12 +255,14 @@ async function main() {
 
 		// Mode 2: with-tool (modified Wikipedia results)
 		console.log("  [with-tool] running...");
+		const seen = createSeenContent();
+		const baseHandler = createToolHandler(seen);
 		const withResult: AgentResult = await runAgentLoop(
 			{
 				system: SYSTEM_PROMPT,
 				userMessage: q.question,
 				toolHandler: async (name: string, input: Record<string, unknown>) => {
-					const result = await defaultToolHandler(name, input);
+					const result = await baseHandler(name, input);
 					return modifyResult(result, q.correctAnswer, q.incorrectValue);
 				},
 			},

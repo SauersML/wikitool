@@ -183,11 +183,13 @@ function worktreeName(algorithm: string, mode: string): string {
 async function runClaude(
 	args: string[],
 	timeoutMs = 600_000,
+	cwd?: string,
 ): Promise<{ stdout: string; exitCode: number }> {
 	const proc = Bun.spawn(["claude", ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 		env: { ...process.env, CLAUDE_CODING_AGENT: "1" },
+		...(cwd ? { cwd } : {}),
 	});
 
 	const timeout = setTimeout(() => proc.kill(), timeoutMs);
@@ -206,7 +208,7 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 
 	const toolInstruction = useTool
 		? `You have access to the search_wikipedia MCP tool. Use it to look up the Wikipedia article "${q.article}" for algorithm details before implementing.`
-		: "Do NOT use any tools. Implement purely from your own knowledge.";
+		: "Do NOT use the Wikipedia search tool. Implement purely from your own knowledge.";
 
 	const prompt = [
 		`${q.prompt}`,
@@ -222,6 +224,10 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	console.log(`  Worktree: ${wt}`);
 	console.log(`  Launching Sonnet...`);
 
+	const allowedTools = useTool
+		? "Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia"
+		: "Edit,Write,Bash,Read,Glob,Grep";
+
 	const { stdout, exitCode } = await runClaude(
 		[
 			"-w",
@@ -231,7 +237,7 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 			"-p",
 			prompt,
 			"--allowedTools",
-			"Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia",
+			allowedTools,
 			"--max-turns",
 			"100",
 		],
@@ -285,7 +291,7 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 
 	console.log(`  Launching Opus evaluator...`);
 
-	// Run Opus in the worktree directory (cd into it, no -w flag)
+	// Run Opus in the worktree directory by setting cwd on the spawned process
 	const wtDir = `${process.cwd()}/.claude/worktrees/${worktreePath}`;
 	const { stdout, exitCode } = await runClaude(
 		[
@@ -293,14 +299,13 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 			OPUS,
 			"-p",
 			prompt,
-			"--cwd",
-			wtDir,
 			"--allowedTools",
 			"Edit,Write,Bash,Read,Glob,Grep",
 			"--max-turns",
 			"100",
 		],
 		600_000,
+		wtDir,
 	);
 
 	// Save Opus log

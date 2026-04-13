@@ -6,7 +6,6 @@
 import {
 	type AgentResult,
 	DEFAULT_MODEL,
-	defaultToolHandler,
 	gradeWithModel,
 	initLog,
 	runAgentLoop,
@@ -132,7 +131,6 @@ async function runQuestion(
 			system: SYSTEM_PROMPT,
 			userMessage: question,
 			tools,
-			toolHandler: defaultToolHandler,
 			model: DEFAULT_MODEL,
 		},
 		log,

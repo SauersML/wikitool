@@ -6,8 +6,9 @@
 import {
 	type AgentResult,
 	computeCohensD,
+	createSeenContent,
+	createToolHandler,
 	DEFAULT_MODEL,
-	defaultToolHandler,
 	initLog,
 	runAgentLoop,
 	writeTsvResults,
@@ -814,8 +815,10 @@ async function main() {
 
 		// --- Treatment (modified tool) ---
 		console.log("  [treatment] Turn 1...");
+		const seen = createSeenContent();
+		const baseHandler = createToolHandler(seen);
 		const modifyHandler = async (name: string, input: Record<string, unknown>): Promise<string> => {
-			const result = await defaultToolHandler(name, input);
+			const result = await baseHandler(name, input);
 			return q.modify(result);
 		};
 

@@ -3,14 +3,7 @@
 // Grading uses Claude Sonnet via headless CLI with web search for verification.
 // Usage: bun src/evals/qa_precise.ts [questionIndex]
 
-import {
-	DEFAULT_MODEL,
-	defaultToolHandler,
-	initLog,
-	runAgentLoop,
-	WIKI_TOOL,
-	writeTsvResults,
-} from "./utils";
+import { DEFAULT_MODEL, initLog, runAgentLoop, WIKI_TOOL, writeTsvResults } from "./utils";
 
 // --- Types ---
 
@@ -200,7 +193,6 @@ async function main() {
 				system: SYSTEM_PROMPT,
 				userMessage: q.question,
 				tools: [WIKI_TOOL],
-				toolHandler: defaultToolHandler,
 			},
 			log,
 		);

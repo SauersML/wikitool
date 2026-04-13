@@ -162,11 +162,14 @@ describe("parseWikitext preserves numeric values", () => {
 });
 
 describe("non-numeric templates are still stripped", () => {
-	test("Infobox is stripped", () => {
+	test("Infobox data is extracted, not stripped", () => {
 		const raw = "{{Infobox country|name=Test|capital=Foo}}\nSome article text here.";
 		const result = parseWikitext(raw);
 		expect(result).not.toContain("Infobox");
 		expect(result).toContain("Some article text here.");
+		// Infobox key-value data should survive
+		expect(result).toContain("Name: Test");
+		expect(result).toContain("Capital: Foo");
 	});
 
 	test("cite web is stripped", () => {

@@ -5,7 +5,6 @@
 
 import {
 	DEFAULT_MODEL,
-	defaultToolHandler,
 	extractFinalAnswer,
 	gradeWithModel,
 	initLog,
@@ -199,7 +198,6 @@ async function runQuestion(
 			system: SYSTEM_PROMPT,
 			userMessage: q.question,
 			tools,
-			...(mode === "with-tool" ? { toolHandler: defaultToolHandler } : {}),
 		},
 		log,
 	);

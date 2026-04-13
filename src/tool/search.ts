@@ -47,8 +47,13 @@ async function lookupTitle(query: string): Promise<TitleResult | null> {
 	if (!res.ok) throw new Error(`Title lookup failed: ${res.status}`);
 
 	const data = (await res.json()) as { title: string; type: string };
-	const redirectFrom = data.title.toLowerCase() !== query.toLowerCase() ? query : undefined;
 
+	// Only treat standard articles as exact matches.
+	// Disambiguation pages, no-extract pages, and the main page
+	// are not useful — fall through to fulltext search instead.
+	if (data.type !== "standard") return null;
+
+	const redirectFrom = data.title.toLowerCase() !== query.toLowerCase() ? query : undefined;
 	return { title: data.title, redirectFrom, type: data.type };
 }
 
@@ -182,6 +187,285 @@ export function preserveNumericTemplates(text: string): string {
 	);
 
 	return t;
+}
+
+/**
+ * Keys that are meta/formatting and should be skipped when extracting infoboxes.
+ */
+const INFOBOX_SKIP_KEYS = new Set([
+	"image",
+	"image_size",
+	"image_caption",
+	"image_alt",
+	"image_map",
+	"image_map1",
+	"image2",
+	"image3",
+	"img",
+	"photo",
+	"logo",
+	"logo_size",
+	"logo_alt",
+	"map",
+	"map_size",
+	"map_caption",
+	"map_alt",
+	"map_image",
+	"map1",
+	"mapframe",
+	"pushpin",
+	"pushpin_map",
+	"pushpin_map_alt",
+	"pushpin_map_caption",
+	"pushpin_label",
+	"pushpin_label_position",
+	"embed",
+	"module",
+	"child",
+	"caption",
+	"label_position",
+	"relief",
+	"coordinates_ref",
+	"elevation_ref",
+	"footnotes",
+	"blank_name",
+	"blank_info",
+	"blank1_name",
+	"blank1_info",
+	"blank2_name",
+	"blank2_info",
+	"image_flag",
+	"flag_size",
+	"image_seal",
+	"seal_size",
+	"image_shield",
+	"shield_size",
+	"image_skyline",
+	"imagesize",
+	"image_blank_emblem",
+	"blank_emblem_size",
+	"mapsize",
+	"mapsize1",
+	"map_caption1",
+	"style",
+	"bodystyle",
+	"abovestyle",
+	"headerstyle",
+	"labelstyle",
+	"datastyle",
+	"above",
+	"header",
+	"header1",
+	"header2",
+	"header3",
+	"width",
+	"fetchwikidata",
+	"label",
+	"native_name",
+	"native_name_lang",
+	"other_name",
+	"prominence_ref",
+	"isolation",
+	"signature",
+	"signature_alt",
+	"thesis_url",
+	"website",
+	"url",
+	"commons",
+	"iucn_category",
+]);
+
+/**
+ * Extract infobox templates from wikitext, parse their key-value pairs into
+ * plain-text blocks, and replace the infobox templates with those blocks.
+ * Runs BEFORE stripNestedBraces so that infobox data survives.
+ */
+export function extractInfoboxes(text: string): string {
+	let result = "";
+	let i = 0;
+
+	while (i < text.length) {
+		// Look for {{ opening
+		if (i + 1 < text.length && text[i] === "{" && text[i + 1] === "{") {
+			// Check if this is an Infobox template
+			const afterBraces = text.slice(i + 2, i + 2 + 20);
+			if (/^\s*infobox/i.test(afterBraces)) {
+				// Find the end of this template using brace-depth counting
+				let depth = 1;
+				let j = i + 2;
+				while (j < text.length && depth > 0) {
+					if (j + 1 < text.length && text[j] === "{" && text[j + 1] === "{") {
+						depth++;
+						j += 2;
+					} else if (j + 1 < text.length && text[j] === "}" && text[j + 1] === "}") {
+						depth--;
+						j += 2;
+					} else {
+						j++;
+					}
+				}
+				// text[i..j) is the full infobox template including {{ and }}
+				const infoboxRaw = text.slice(i + 2, j - 2); // content between {{ and }}
+				const extracted = parseInfoboxContent(infoboxRaw);
+				result += extracted;
+				i = j;
+				continue;
+			}
+		}
+		result += text[i];
+		i++;
+	}
+
+	return result;
+}
+
+/**
+ * Parse the inner content of an infobox template and return a plain-text block
+ * of key-value pairs. Returns empty string if no useful pairs are found
+ * (e.g. transcluded infoboxes with no parameters).
+ */
+function parseInfoboxContent(raw: string): string {
+	const pairs: Array<{ key: string; value: string }> = [];
+
+	// Split on | at depth 0 (not inside nested {{ }} or [[ ]])
+	const segments: string[] = [];
+	let braceDepth = 0;
+	let bracketDepth = 0;
+	let segStart = 0;
+	for (let ci = 0; ci < raw.length; ci++) {
+		if (ci + 1 < raw.length && raw[ci] === "{" && raw[ci + 1] === "{") {
+			braceDepth++;
+			ci++; // skip next char
+		} else if (ci + 1 < raw.length && raw[ci] === "}" && raw[ci + 1] === "}") {
+			braceDepth--;
+			ci++;
+		} else if (ci + 1 < raw.length && raw[ci] === "[" && raw[ci + 1] === "[") {
+			bracketDepth++;
+			ci++;
+		} else if (ci + 1 < raw.length && raw[ci] === "]" && raw[ci + 1] === "]") {
+			bracketDepth--;
+			ci++;
+		} else if (raw[ci] === "|" && braceDepth === 0 && bracketDepth === 0) {
+			segments.push(raw.slice(segStart, ci));
+			segStart = ci + 1;
+		}
+	}
+	segments.push(raw.slice(segStart));
+
+	// First segment is the template name (e.g. "Infobox mountain\n"), skip it
+	for (let si = 1; si < segments.length; si++) {
+		const seg = segments[si]!;
+		const eqIdx = seg.indexOf("=");
+		if (eqIdx < 0) continue; // positional parameter, skip
+
+		const rawKey = seg.slice(0, eqIdx).trim();
+		const rawValue = seg.slice(eqIdx + 1).trim();
+
+		if (!rawKey || !rawValue) continue;
+
+		// Normalize key for skip-check: lowercase, strip trailing digits
+		const keyNorm = rawKey.toLowerCase().replace(/\d+$/, "").trim();
+		if (INFOBOX_SKIP_KEYS.has(keyNorm)) continue;
+		// Also check the raw lowercase key (without digit stripping) for exact matches
+		if (INFOBOX_SKIP_KEYS.has(rawKey.toLowerCase().trim())) continue;
+
+		// Skip keys that match layout/infrastructure patterns
+		if (/^mapframe/i.test(keyNorm)) continue;
+		if (/_(ref|style|type|link)$/i.test(keyNorm) && !/^(leader|government)_type$/i.test(keyNorm)) {
+			continue;
+		}
+		if (/^(parts|seat|established|blank_emblem|subdivision)_?(type|style)/i.test(keyNorm)) {
+			continue;
+		}
+		// Skip image/visual-related compound keys
+		if (
+			/image|img|photo|logo|map|flag|seal|shield|skyline|emblem|icon/i.test(keyNorm) &&
+			/size|caption|alt|_map|file|name/i.test(keyNorm)
+		) {
+			continue;
+		}
+
+		// Clean the value
+		let val = rawValue;
+
+		// Run preserveNumericTemplates on the value to convert {{convert}}, {{coord}}, etc.
+		val = preserveNumericTemplates(val);
+
+		// Strip remaining nested templates ({{ ... }}) from the value
+		val = stripNestedBracesSimple(val);
+
+		// Strip <ref>...</ref> and <ref ... />
+		val = val.replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "");
+		val = val.replace(/<ref[^>]*\/>/gi, "");
+
+		// Strip HTML tags but keep content
+		val = val.replace(/<\/?[a-z][^>]*\/?>/gi, "");
+
+		// Convert wikilinks: [[target|display]] → display, [[target]] → target
+		val = val.replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, "$2");
+		val = val.replace(/\[\[([^\]]*)\]\]/g, "$1");
+
+		// Strip external links: [http://... display] → display
+		val = val.replace(/\[https?:\/\/[^\s\]]*\s+([^\]]+)\]/g, "$1");
+		val = val.replace(/\[https?:\/\/[^\s\]]*\]/g, "");
+
+		// Clean up excess whitespace
+		val = val.replace(/\s+/g, " ").trim();
+
+		// Skip if value is empty or just punctuation/whitespace after cleaning
+		if (!val || /^[\s.,;:\-–—]*$/.test(val)) continue;
+
+		// Skip values that are just filenames or URLs
+		if (/\.(jpg|jpeg|png|svg|gif|webp|pdf)$/i.test(val)) continue;
+		if (/^https?:\/\//i.test(val)) continue;
+
+		// Format the key: underscores to spaces, title case first word
+		const readableKey = formatInfoboxKey(rawKey);
+
+		pairs.push({ key: readableKey, value: val });
+	}
+
+	if (pairs.length === 0) return "";
+
+	// Format as a plain-text block
+	const lines = pairs.map((p) => `${p.key}: ${p.value}`);
+	return `\n${lines.join("\n")}\n`;
+}
+
+/**
+ * Strip nested {{ }} from a string. Simpler version used for cleaning infobox values.
+ */
+function stripNestedBracesSimple(text: string): string {
+	let out = "";
+	let i = 0;
+	let depth = 0;
+	while (i < text.length) {
+		if (i + 1 < text.length && text[i] === "{" && text[i + 1] === "{") {
+			depth++;
+			i += 2;
+		} else if (i + 1 < text.length && text[i] === "}" && text[i + 1] === "}") {
+			if (depth > 0) depth--;
+			i += 2;
+		} else {
+			if (depth === 0) out += text[i];
+			i++;
+		}
+	}
+	return out;
+}
+
+/**
+ * Format an infobox key into readable form.
+ * "elevation_m" → "Elevation m", "first_ascent" → "First ascent"
+ */
+function formatInfoboxKey(key: string): string {
+	// Replace underscores with spaces
+	let k = key.replace(/_/g, " ").trim();
+	// Title case the first letter
+	if (k.length > 0) {
+		k = k.charAt(0).toUpperCase() + k.slice(1);
+	}
+	return k;
 }
 
 function stripNestedBraces(text: string): string {
@@ -344,7 +628,9 @@ export function parseWikitext(raw: string): string {
 	t = stripFiles(t);
 	// Preserve numeric/value templates before stripping all templates
 	t = preserveNumericTemplates(t);
-	// Templates
+	// Extract infobox data as plain text before stripping all templates
+	t = extractInfoboxes(t);
+	// Templates (strips remaining junk like {{cite web}}, {{reflist}}, etc.)
 	t = stripNestedBraces(t);
 	// Gallery
 	t = t.replace(/<gallery[\s\S]*?<\/gallery>/gi, "");
@@ -573,25 +859,176 @@ function truncate(text: string, limit: number): string {
 	return `${result.trimEnd()}\n[truncated]`;
 }
 
-// --- Deduplication ---
+// --- Deduplication (sentence-level, scoped per article) ---
 
-export type SeenPages = Set<string>;
-
-export function createSeenPages(): SeenPages {
-	return new Set();
+export interface SeenContent {
+	/** Per-article sets of normalised chunks already returned. */
+	articles: Map<string, Set<string>>;
+	/** Cached raw page data — avoids re-fetching the same article from Wikipedia. */
+	pageCache: Map<string, PageData>;
 }
 
-function alreadySeen(title: string, seen: SeenPages): boolean {
-	return seen.has(title.toLowerCase());
+export function createSeenContent(): SeenContent {
+	return { articles: new Map(), pageCache: new Map() };
 }
 
-function markSeen(title: string, seen: SeenPages): void {
-	seen.add(title.toLowerCase());
+const MIN_DEDUP_LENGTH = 40;
+
+function normalizeChunk(s: string): string {
+	return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isHeader(chunk: string): boolean {
+	return /^={2,}\s*.+\s*={2,}\s*$/.test(chunk.trim());
+}
+
+function isDedupable(chunk: string): boolean {
+	return !isHeader(chunk) && chunk.length >= MIN_DEDUP_LENGTH;
+}
+
+function articleSeen(article: string, seen: SeenContent): Set<string> {
+	const key = article.toLowerCase();
+	let set = seen.articles.get(key);
+	if (!set) {
+		set = new Set();
+		seen.articles.set(key, set);
+	}
+	return set;
+}
+
+/**
+ * Remove already-returned sentences from text.
+ * Scoped to a single article so identical sentences in different
+ * articles are never falsely deduplicated.
+ * Headers and very short chunks are always kept (structural context,
+ * too short to reliably deduplicate).
+ */
+function filterSeen(text: string, article: string, seen: SeenContent): string {
+	const set = articleSeen(article, seen);
+	const chunks = splitChunks(text);
+	const novel: string[] = [];
+	for (const chunk of chunks) {
+		if (!isDedupable(chunk) || !set.has(normalizeChunk(chunk))) {
+			novel.push(chunk);
+		}
+	}
+	return novel.join("\n\n");
+}
+
+/**
+ * Returns true if text has any novel content chunks (non-header, non-trivial)
+ * that haven't been returned for this article yet.
+ */
+function hasNovelContent(text: string, article: string, seen: SeenContent): boolean {
+	const set = articleSeen(article, seen);
+	for (const chunk of splitChunks(text)) {
+		if (!isDedupable(chunk)) continue;
+		if (!set.has(normalizeChunk(chunk))) return true;
+	}
+	return false;
+}
+
+/**
+ * Returns true if any content chunk in text was already returned
+ * for this article.
+ */
+function hasSeenChunks(text: string, article: string, seen: SeenContent): boolean {
+	const set = articleSeen(article, seen);
+	for (const chunk of splitChunks(text)) {
+		if (!isDedupable(chunk)) continue;
+		if (set.has(normalizeChunk(chunk))) return true;
+	}
+	return false;
+}
+
+/** Mark all substantial chunks in text as seen for this article. */
+function markContentSeen(text: string, article: string, seen: SeenContent): void {
+	const set = articleSeen(article, seen);
+	for (const chunk of splitChunks(text)) {
+		if (!isDedupable(chunk)) continue;
+		set.add(normalizeChunk(chunk));
+	}
+}
+
+/**
+ * Combined filter + novelty check in a single pass over chunks.
+ * Avoids the double splitChunks call that happens when filterSeen
+ * and hasNovelContent are called sequentially on the same text.
+ */
+function filterAndCheckNovelty(
+	text: string,
+	article: string,
+	seen: SeenContent,
+): { filtered: string; hasNovel: boolean } {
+	const set = articleSeen(article, seen);
+	const chunks = splitChunks(text);
+	const novel: string[] = [];
+	let hasNovel = false;
+	for (const chunk of chunks) {
+		if (!isDedupable(chunk)) {
+			novel.push(chunk);
+			continue;
+		}
+		if (!set.has(normalizeChunk(chunk))) {
+			novel.push(chunk);
+			hasNovel = true;
+		}
+	}
+	return { filtered: novel.join("\n\n"), hasNovel };
+}
+
+/** Fetch page content, using the SeenContent page cache when available. */
+async function getPageContentCached(title: string, seen?: SeenContent): Promise<PageData> {
+	if (seen) {
+		const cached = seen.pageCache.get(title);
+		if (cached) return cached;
+	}
+	const page = await getPageContent(title);
+	if (seen) seen.pageCache.set(title, page);
+	return page;
+}
+
+// --- Intro trimming ---
+
+/**
+ * Trim intro text to fit a budget, prioritizing infobox lines over prose.
+ * Infobox lines are "Key: Value" format (from extractInfoboxes).
+ * Prose lines are everything else (opening paragraphs, image captions, etc.).
+ */
+function trimIntro(intro: string, budget: number): string {
+	if (intro.length <= budget) return intro;
+
+	const lines = intro.split("\n");
+	const infoboxLines: string[] = [];
+	const proseLines: string[] = [];
+
+	for (const line of lines) {
+		// Infobox lines match "Key: Value" pattern (from extractInfoboxes output)
+		if (/^[A-Z][a-z_ ]+: ./.test(line)) {
+			infoboxLines.push(line);
+		} else if (line.trim()) {
+			proseLines.push(line);
+		}
+	}
+
+	// Build result: infobox lines first, then prose, within budget
+	let result = "";
+	for (const line of infoboxLines) {
+		if (result.length + line.length + 1 > budget) break;
+		result += `${line}\n`;
+	}
+	// Add a blank line separator if we have both types
+	if (result && proseLines.length > 0) result += "\n";
+	for (const line of proseLines) {
+		if (result.length + line.length + 1 > budget) break;
+		result += `${line}\n`;
+	}
+	return result.trim();
 }
 
 // --- Main ---
 
-export async function searchWikipedia(query: string, seen?: SeenPages): Promise<string> {
+export async function searchWikipedia(query: string, seen?: SeenContent): Promise<string> {
 	const errors: string[] = [];
 	try {
 		const [title, search] = await Promise.all([
@@ -609,22 +1046,6 @@ export async function searchWikipedia(query: string, seen?: SeenPages): Promise<
 		if (errors.length > 0 && search.hits.length === 0) {
 			return `<error query="${x(query)}">${x(errors.join("; "))}</error>`;
 		}
-		// If the top search result's title words all appear in the query,
-		// treat it as an article match with section targeting from the extra words.
-		// e.g. "photosynthesis process plants" → article "Photosynthesis", detect sections for "process plants"
-		const topHit = search.hits[0];
-		if (topHit) {
-			const titleWords = topHit.title.toLowerCase().split(/\s+/);
-			const queryWords = query.toLowerCase().split(/\s+/);
-			if (titleWords.every((tw) => queryWords.some((qw) => qw === tw))) {
-				const implied: TitleResult = {
-					title: topHit.title,
-					redirectFrom: undefined,
-					type: "standard",
-				};
-				return await articleResult(query, implied, search, seen);
-			}
-		}
 		return await searchResults(query, search, seen);
 	} catch (err) {
 		return `<error query="${x(query)}">${x(err instanceof Error ? err.message : String(err))}</error>`;
@@ -635,20 +1056,49 @@ async function articleResult(
 	query: string,
 	title: TitleResult,
 	search: SearchResponse,
-	seen?: SeenPages,
+	seen?: SeenContent,
 ): Promise<string> {
-	const page = await getPageContent(title.title);
+	const page = await getPageContentCached(title.title, seen);
 	const content = parseWikitext(page.wikitext);
 	const leaves = topLevelSections(page.sections);
 	const isStub = content.length < 500;
 
-	// If we already returned this article, return a compact reference
-	if (seen && alreadySeen(title.title, seen)) {
-		let xml = `<result query="${x(query)}">\n`;
-		xml += `<article title="${x(title.title)}" already_returned="true">\n`;
-		xml += `${formatSections(leaves)}\n`;
-		xml += "</article>\n</result>";
-		return xml;
+	// Split content into intro (before first == header) and the rest.
+	// Intro contains infobox data + opening paragraph.
+	const firstHeader = content.indexOf("\n==");
+	const intro = firstHeader > 0 ? content.slice(0, firstHeader).trim() : "";
+
+	const relevant = detectSections(query, title.title, page.sections, search.hits);
+	let body = "";
+	if (relevant.length > 0) {
+		const sections = relevant
+			.map((n) => extractSection(content, n, query))
+			.filter(Boolean)
+			.join("\n\n");
+
+		// Budget: matched sections get priority, intro fills remaining space.
+		// Within intro, infobox lines (Key: Value) are prioritized over prose.
+		const sectionBudget = Math.min(sections.length, CHAR_LIMIT * 0.7);
+		const introBudget = CHAR_LIMIT * 0.6 - sectionBudget;
+		const trimmedIntro = introBudget > 100 ? trimIntro(intro, introBudget) : "";
+		body = trimmedIntro ? `${trimmedIntro}\n\n${sections}` : sections;
+	}
+	if (!body) body = content;
+
+	// Single-pass filter + novelty check (avoids double splitChunks on body)
+	let novelBody: string;
+	if (seen) {
+		const { filtered, hasNovel } = filterAndCheckNovelty(body, title.title, seen);
+		if (!hasNovel) {
+			let xml = `<result query="${x(query)}">\n`;
+			xml += `<article title="${x(title.title)}" already_returned="true">\n`;
+			xml += `${formatSections(leaves)}\n`;
+			xml += "</article>\n</result>";
+			return xml;
+		}
+		novelBody = filtered;
+	} else {
+		novelBody = body;
 	}
 
 	let xml = `<result query="${x(query)}">\n`;
@@ -663,16 +1113,8 @@ async function articleResult(
 	const close = "</article>\n</result>";
 	const budget = CHAR_LIMIT - xml.length - close.length - 25;
 
-	const relevant = detectSections(query, title.title, page.sections, search.hits);
-	let body = "";
-	if (relevant.length > 0) {
-		body = relevant
-			.map((n) => extractSection(content, n, query))
-			.filter(Boolean)
-			.join("\n\n");
-	}
-	if (!body) body = content;
-	xml += `<content>${cdata(`\n${truncate(body, budget)}\n`)}</content>\n`;
+	const finalBody = truncate(novelBody, budget);
+	xml += `<content>${cdata(`\n${finalBody}\n`)}</content>\n`;
 	xml += "</article>\n";
 
 	if (isStub && search.hits.length > 1) {
@@ -681,14 +1123,14 @@ async function articleResult(
 	}
 
 	xml += "</result>";
-	if (seen) markSeen(title.title, seen);
+	if (seen) markContentSeen(finalBody, title.title, seen);
 	return xml;
 }
 
 async function searchResults(
 	query: string,
 	search: SearchResponse,
-	seen?: SeenPages,
+	seen?: SeenContent,
 ): Promise<string> {
 	if (search.hits.length === 0) {
 		let xml = `<result query="${x(query)}"><no_results`;
@@ -697,29 +1139,37 @@ async function searchResults(
 	}
 
 	const top = search.hits.slice(0, 3);
-	const pages = await Promise.all(top.map((h) => getPageContent(h.title).catch(() => null)));
+	const pages = await Promise.all(
+		top.map((h) => getPageContentCached(h.title, seen).catch(() => null)),
+	);
+
+	// Parse each page exactly once and pre-compute novelty flags
+	const parsed = pages.map((page) => (page ? parseWikitext(page.wikitext) : null));
+	const novelFlags = parsed.map((p, idx) => {
+		if (!p) return false;
+		if (!seen) return true;
+		return hasNovelContent(p, top[idx]!.title, seen);
+	});
+	const novelCount = novelFlags.filter(Boolean).length;
 
 	let xml = `<result query="${x(query)}" total="${search.totalHits}"`;
 	if (search.suggestion) xml += ` suggestion="${x(search.suggestion)}"`;
 	xml += ">\n";
 	let remaining = CHAR_LIMIT - xml.length - 20;
-
-	// Count unseen results for fair budget splitting
-	const unseenCount = top.filter((h) => !seen || !alreadySeen(h.title, seen)).length;
-	let unseenRendered = 0;
+	let novelRendered = 0;
 
 	for (let i = 0; i < top.length && remaining > 100; i++) {
 		const hit = top[i];
 		const page = pages[i];
-		if (!page || !hit) continue;
+		const content = parsed[i];
+		if (!page || !hit || !content) continue;
 
-		// Skip pages already returned in a prior call
-		if (seen && alreadySeen(hit.title, seen)) {
+		// If every sentence was already returned, emit compact tag
+		if (seen && !novelFlags[i]) {
 			xml += `<page title="${x(hit.title)}" already_returned="true" />\n`;
 			continue;
 		}
 
-		const parsed = parseWikitext(page.wikitext);
 		const leaves = topLevelSections(page.sections);
 		const secList = `${formatSections(leaves)}\n`;
 
@@ -730,28 +1180,51 @@ async function searchResults(
 		const overhead = tag.length + secList.length + closeTag.length + 25;
 
 		// Cap per-result budget so one result can't starve the rest
-		const unseenLeft = unseenCount - unseenRendered;
-		const perResultBudget = Math.floor(remaining / Math.max(unseenLeft, 1));
+		const novelLeft = novelCount - novelRendered;
+		const perResultBudget = Math.floor(remaining / Math.max(novelLeft, 1));
 		const contentBudget = perResultBudget - overhead;
 
 		if (contentBudget < 80) continue;
 
-		if (parsed.length <= contentBudget) {
-			xml += `${tag}${secList}<content>${cdata(`\n${parsed}\n`)}</content>\n${closeTag}`;
+		// Build body, then filter to novel sentences only.
+		// The matched section is the primary content — give it priority
+		// over the lead introduction when budget is tight.
+		let body: string;
+		if (content.length <= contentBudget && (!seen || !hasSeenChunks(content, hit.title, seen))) {
+			// Full article fits and is entirely novel — use as-is
+			body = content;
 		} else {
-			// Always include lead section, plus matched section if different
-			const lead = extractLead(parsed);
-			const section = hit.sectionTitle ? extractSection(parsed, hit.sectionTitle, query) : "";
-			let body: string;
+			const lead = extractLead(content);
+			const section = hit.sectionTitle ? extractSection(content, hit.sectionTitle, query) : "";
 			if (section && section !== lead) {
-				body = `${lead}\n\n${section}`;
+				const sep = "\n\n";
+				const total = lead.length + sep.length + section.length;
+				if (total <= contentBudget) {
+					body = `${lead}${sep}${section}`;
+				} else if (section.length >= contentBudget) {
+					// Section alone exceeds budget — use just the section
+					body = section;
+				} else {
+					// Section fits; truncate lead to fill remaining space
+					const leadBudget = contentBudget - section.length - sep.length;
+					if (leadBudget >= 100) {
+						body = `${truncate(lead, leadBudget)}${sep}${section}`;
+					} else {
+						body = section;
+					}
+				}
 			} else {
-				body = lead || parsed;
+				body = lead || content;
 			}
-			xml += `${tag}${secList}<content>${cdata(`\n${truncate(body, contentBudget)}\n`)}</content>\n${closeTag}`;
 		}
-		if (seen) markSeen(hit.title, seen);
-		unseenRendered++;
+
+		const novelBody = seen ? filterSeen(body, hit.title, seen) : body;
+		const finalBody =
+			novelBody.length <= contentBudget ? novelBody : truncate(novelBody, contentBudget);
+		xml += `${tag}${secList}<content>${cdata(`\n${finalBody}\n`)}</content>\n${closeTag}`;
+
+		if (seen) markContentSeen(finalBody, hit.title, seen);
+		novelRendered++;
 		remaining = CHAR_LIMIT - xml.length - 20;
 	}
 

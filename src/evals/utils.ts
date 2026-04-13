@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { QUERY_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
-import { searchWikipedia } from "../tool/search";
+import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/search";
 
 // --- Constants ---
 
@@ -59,6 +59,20 @@ export interface RunOptions {
 
 // --- Default tool handler ---
 
+/** Create a tool handler that passes `seen` to searchWikipedia for cross-call dedup. */
+export function createToolHandler(seen: SeenContent): ToolHandler {
+	return async (name: string, input: Record<string, unknown>): Promise<string> => {
+		if (name === TOOL_NAME) {
+			return searchWikipedia(input["query"] as string, seen);
+		}
+		return `Unknown tool: ${name}`;
+	};
+}
+
+/**
+ * Stateless tool handler — no dedup across calls.
+ * Prefer createToolHandler() for multi-turn conversations.
+ */
 export async function defaultToolHandler(
 	name: string,
 	input: Record<string, unknown>,
@@ -68,6 +82,8 @@ export async function defaultToolHandler(
 	}
 	return `Unknown tool: ${name}`;
 }
+
+export { createSeenContent, type SeenContent };
 
 // --- Timestamp ---
 
@@ -114,7 +130,7 @@ export async function runAgentLoop(
 	const model = opts.model ?? DEFAULT_MODEL;
 	const maxTokens = opts.maxTokens ?? 1024;
 	const maxTurns = opts.maxTurns ?? 15;
-	const handler = opts.toolHandler ?? defaultToolHandler;
+	const handler = opts.toolHandler ?? createToolHandler(createSeenContent());
 	const tools = opts.tools ?? [WIKI_TOOL];
 	const apiTools = tools.length > 0 ? tools : undefined;
 

@@ -36,7 +36,7 @@ export const SYSTEM_PROMPT =
 export const QUESTIONS: Question[] = [
 	{
 		question:
-			"What specific enzyme catalyzes the committed step in the mevalonate pathway, and what is its EC number?",
+			"What specific enzyme catalyzes the rate-limiting step in the mevalonate pathway, and what is its EC number?",
 		expected: "HMG-CoA reductase, EC 1.1.1.34",
 		domain: "Biochemistry",
 	},
@@ -65,7 +65,7 @@ export const QUESTIONS: Question[] = [
 		question:
 			"What are the specific crystal field splitting energies (in terms of Dq) for an octahedral versus tetrahedral coordination, and why is the tetrahedral splitting smaller?",
 		expected:
-			"Octahedral: 10Dq; Tetrahedral: 4/9 × 10Dq = 4.44Dq; smaller because no ligands point directly at d orbitals",
+			"Octahedral: 10Dq; Tetrahedral: 4/9 × 10Dq = 4.44Dq; smaller because fewer ligands (4 vs 6) and none point directly at d orbitals",
 		domain: "Chemistry",
 	},
 	{

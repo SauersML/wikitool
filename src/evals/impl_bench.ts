@@ -232,6 +232,8 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 			prompt,
 			"--allowedTools",
 			"Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia",
+			"--max-turns",
+			"100",
 		],
 		600_000,
 	);
@@ -295,6 +297,8 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 			wtDir,
 			"--allowedTools",
 			"Edit,Write,Bash,Read,Glob,Grep",
+			"--max-turns",
+			"100",
 		],
 		600_000,
 	);

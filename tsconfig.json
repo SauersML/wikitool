@@ -20,6 +20,6 @@
 		"exactOptionalPropertyTypes": true,
 		"noPropertyAccessFromIndexSignature": true
 	},
-	"include": ["src", "*.ts", "worker-configuration.d.ts"],
-	"exclude": ["node_modules"]
+	"include": ["src/index.ts", "src/tool", "src/site.ts", "*.ts", "worker-configuration.d.ts"],
+	"exclude": ["node_modules", "src/evals", "src/tests"]
 }

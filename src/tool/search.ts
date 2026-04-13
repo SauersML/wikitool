@@ -114,6 +114,90 @@ async function getPageContent(title: string): Promise<PageData> {
 
 // --- Wikitext parser ---
 
+/**
+ * Replace common value-containing templates with their plain-text equivalents
+ * BEFORE stripNestedBraces runs, so that numeric data survives.
+ */
+export function preserveNumericTemplates(text: string): string {
+	let t = text;
+
+	// {{convert|VALUE|FROM_UNIT|TO_UNIT|...}} → "VALUE FROM_UNIT"
+	// {{convert|VALUE|FROM_UNIT}} → "VALUE FROM_UNIT"
+	// Handles optional extra params like abbr=on, sp=us, etc.
+	t = t.replace(
+		/\{\{convert\|([^|{}]+)\|([^|{}]+?)(?:\|[^{}]*)?\}\}/gi,
+		(_m, value: string, unit: string) => `${value.trim()} ${unit.trim()}`,
+	);
+
+	// {{val|VALUE|u=UNIT}} → "VALUE UNIT"
+	// {{val|VALUE}} → "VALUE"
+	t = t.replace(
+		/\{\{val\|([^|{}]+)(?:\|[^{}]*)?\}\}/gi,
+		(_m, value: string) => {
+			const full = _m as string;
+			const unitMatch = full.match(/u=([^|{}]+)/i);
+			if (unitMatch?.[1]) return `${value.trim()} ${unitMatch[1].trim()}`;
+			return value.trim();
+		},
+	);
+
+	// {{formatnum:NUMBER}} → "NUMBER"
+	t = t.replace(
+		/\{\{formatnum:([^{}]+)\}\}/gi,
+		(_m, num: string) => num.trim(),
+	);
+
+	// {{age|Y|M|D}} → calculate or keep as placeholder
+	t = t.replace(
+		/\{\{age\|(\d+)\|(\d+)\|(\d+)\}\}/gi,
+		(_m, y: string, mo: string, d: string) => {
+			const birth = new Date(Number(y), Number(mo) - 1, Number(d));
+			const now = new Date();
+			let age = now.getFullYear() - birth.getFullYear();
+			const monthDiff = now.getMonth() - birth.getMonth();
+			if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
+				age--;
+			}
+			return String(age);
+		},
+	);
+
+	// {{circa|YEAR}} → "c. YEAR"
+	t = t.replace(
+		/\{\{circa\|([^|{}]+)\}\}/gi,
+		(_m, year: string) => `c. ${year.trim()}`,
+	);
+
+	// {{birth date|Y|M|D|...}} → "Y-M-D"  (also handles birth date and age)
+	t = t.replace(
+		/\{\{birth date(?:\s+and\s+age)?\|(\d+)\|(\d+)\|(\d+)(?:\|[^{}]*)?\}\}/gi,
+		(_m, y: string, mo: string, d: string) =>
+			`${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
+	);
+
+	// {{death date|Y|M|D|...}} → "Y-M-D"  (also handles death date and age)
+	t = t.replace(
+		/\{\{death date(?:\s+and\s+age)?\|(\d+)\|(\d+)\|(\d+)(?:\|[^{}]*)?\}\}/gi,
+		(_m, y: string, mo: string, d: string) =>
+			`${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
+	);
+
+	// {{coord|LAT|LON|...}} → "LAT, LON"
+	// coord templates are complex; grab the first two numeric-looking params
+	t = t.replace(
+		/\{\{coord\|([^|{}]+)\|([^|{}]+)(?:\|[^{}]*)?\}\}/gi,
+		(_m, a: string, b: string) => `${a.trim()}, ${b.trim()}`,
+	);
+
+	// {{pop density|POP|AREA|...}} → "POP/AREA"
+	t = t.replace(
+		/\{\{pop density\|([^|{}]+)\|([^|{}]+)(?:\|[^{}]*)?\}\}/gi,
+		(_m, pop: string, area: string) => `${pop.trim()}/${area.trim()}`,
+	);
+
+	return t;
+}
+
 function stripNestedBraces(text: string): string {
 	let out = "";
 	let i = 0;
@@ -254,7 +338,7 @@ function abbreviateRef(body: string): string {
 	return "";
 }
 
-function parseWikitext(raw: string): string {
+export function parseWikitext(raw: string): string {
 	let t = raw;
 	// HTML comments
 	t = t.replace(/<!--[\s\S]*?-->/g, "");
@@ -272,6 +356,8 @@ function parseWikitext(raw: string): string {
 	t = t.replace(/\[\[Category:[^\]]*\]\]/gi, "");
 	// Files/images (keep captions)
 	t = stripFiles(t);
+	// Preserve numeric/value templates before stripping all templates
+	t = preserveNumericTemplates(t);
 	// Templates
 	t = stripNestedBraces(t);
 	// Gallery

@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
 	extractNumbers,
+	type HLEQuestion,
 	judge,
 	judgeExactMatch,
 	judgeMultipleChoice,
 	QUESTIONS,
-	type HLEQuestion,
 } from "../evals/hle_sauers";
 
 describe("hle_sauers eval", () => {

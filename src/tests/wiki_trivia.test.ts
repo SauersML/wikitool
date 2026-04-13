@@ -74,30 +74,28 @@ describe("wiki_trivia eval", () => {
 	});
 
 	describe("matchesAny with trivia answers", () => {
-		test("matches Fox Broadcasting variants", () => {
-			expect(
-				matchesAny("It airs on Fox.", ["Fox", "Fox Broadcasting", "Fox Broadcasting Company"]),
-			).toBe(true);
-			expect(
-				matchesAny("The Fox Broadcasting Company.", [
-					"Fox",
-					"Fox Broadcasting",
-					"Fox Broadcasting Company",
-				]),
-			).toBe(true);
+		test("matches obscure names", () => {
+			expect(matchesAny("The Kabsch algorithm solves this.", ["Kabsch algorithm", "Kabsch"])).toBe(
+				true,
+			);
+			expect(matchesAny("It was originally called ReelTime.", ["ReelTime", "Reel Time"])).toBe(
+				true,
+			);
 		});
 
 		test("matches historical names with diacritics or alternate spellings", () => {
 			expect(
-				matchesAny("Abd al-Rahman al-Sufi described it.", ["al-Sufi", "Abd al-Rahman al-Sufi"]),
+				matchesAny("José Antonio Echeverría led the attack.", [
+					"José Antonio Echeverría",
+					"Echeverría",
+					"Echeverria",
+				]),
 			).toBe(true);
 		});
 
 		test("matches short unique answers", () => {
-			expect(matchesAny("The answer is Granma.", ["Granma"])).toBe(true);
-			expect(
-				matchesAny("It was called NGP before release.", ["Next Generation Portable", "NGP"]),
-			).toBe(true);
+			expect(matchesAny("The alloy is called Elektron.", ["Elektron"])).toBe(true);
+			expect(matchesAny("The armour system is Kontakt-5.", ["Kontakt-5", "Kontakt 5"])).toBe(true);
 		});
 	});
 });

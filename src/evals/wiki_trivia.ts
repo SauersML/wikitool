@@ -28,7 +28,8 @@ export interface TriviaQuestion {
 // --- System prompt ---
 
 export const SYSTEM_PROMPT =
-	"You are a helpful trivia assistant. Answer the question as concisely and accurately as possible. If you have access to a search tool, use it when you are not confident. If you don't know the answer, say \"I don't know\" rather than guessing.";
+	"You are a helpful trivia assistant. Answer the question as concisely and accurately as possible. If you have access to a search tool, use it when you are not confident. If you don't know the answer, say \"I don't know\" rather than guessing. " +
+	"End with ANSWER: followed by your answer.";
 
 // --- Questions ---
 // Curated from willcb/wiki-trivia-questions (2261 total rows).
@@ -36,144 +37,155 @@ export const SYSTEM_PROMPT =
 // literature, music, technology, and culture — mixing easy, medium, and hard.
 
 export const QUESTIONS: TriviaQuestion[] = [
-	// --- Easy (model likely knows without tool) ---
 	{
-		question: "Which network broadcasts the show Bob's Burgers?",
-		answer: "Fox Broadcasting Company",
-		acceptableAnswers: ["Fox", "Fox Broadcasting", "Fox Broadcasting Company"],
-		topic: "Television",
-		datasetIndex: 5,
+		question:
+			"What is the name of the problem that uses SVD to compute the optimal rotation aligning one set of points with another, often used in molecular structure comparison?",
+		answer: "Kabsch algorithm",
+		acceptableAnswers: ["Kabsch algorithm", "Kabsch"],
+		topic: "Computational Biology",
+		datasetIndex: 522,
 	},
 	{
 		question:
-			"Which actor voiced the character Rooster, the Welsh Sheepdog, in The Secret Life of Pets 2?",
-		answer: "Harrison Ford",
-		acceptableAnswers: ["Harrison Ford"],
+			"What was the original name of Adobe Premiere before being acquired and renamed by Adobe?",
+		answer: "ReelTime",
+		acceptableAnswers: ["ReelTime", "Reel Time"],
+		topic: "Technology",
+		datasetIndex: 550,
+	},
+	{
+		question:
+			"Which tunnel is the only land access to Whittier, Alaska, and is the longest combined rail and highway tunnel in North America?",
+		answer: "Anton Anderson Memorial Tunnel",
+		acceptableAnswers: ["Anton Anderson Memorial Tunnel", "Anton Anderson", "Whittier Tunnel"],
+		topic: "Infrastructure",
+		datasetIndex: 556,
+	},
+	{
+		question:
+			"Name the particle filtering method published in 1993 that applies Monte Carlo resampling algorithms in Bayesian statistical inference.",
+		answer: "Bootstrap filter",
+		acceptableAnswers: ["Bootstrap filter", "bootstrap filter"],
+		topic: "Statistics",
+		datasetIndex: 590,
+	},
+	{
+		question: "Which alien species takes over Earth in the film 'Landscape with Invisible Hand'?",
+		answer: "Vuvv",
+		acceptableAnswers: ["Vuvv"],
 		topic: "Film",
-		datasetIndex: 14,
-	},
-	{
-		question: "Who directed the 1997 science fiction film The Fifth Element?",
-		answer: "Luc Besson",
-		acceptableAnswers: ["Luc Besson", "Besson"],
-		topic: "Film",
-		datasetIndex: 83,
-	},
-	{
-		question: "Which rapper made his film debut starring as Jimmy Smith Jr. in 8 Mile?",
-		answer: "Eminem",
-		acceptableAnswers: ["Eminem", "Marshall Mathers", "Slim Shady"],
-		topic: "Music/Film",
-		datasetIndex: 531,
-	},
-	{
-		question: "Who was the 15th President of the United States?",
-		answer: "James Buchanan",
-		acceptableAnswers: ["James Buchanan", "Buchanan"],
-		topic: "History",
-		datasetIndex: 1024,
-	},
-
-	// --- Medium (model may or may not know) ---
-	{
-		question: "Who were the two architects responsible for the design of the Parthenon?",
-		answer: "Iktinos and Callicrates",
-		acceptableAnswers: ["Iktinos", "Callicrates", "Ictinus", "Kallikrates"],
-		topic: "Architecture",
-		datasetIndex: 24,
+		datasetIndex: 535,
 	},
 	{
 		question:
-			"Which Russian composer was a member of the group known as The Five and is famous for the orchestral suite Scheherazade?",
-		answer: "Nikolai Rimsky-Korsakov",
-		acceptableAnswers: ["Rimsky-Korsakov", "Nikolai Rimsky-Korsakov"],
-		topic: "Music",
-		datasetIndex: 42,
+			"Which culture is traditionally associated with the origin of the Celtic language in central Europe around 1200 BC?",
+		answer: "Urnfield culture",
+		acceptableAnswers: ["Urnfield culture", "Urnfield"],
+		topic: "Archaeology",
+		datasetIndex: 809,
 	},
 	{
 		question:
-			"Which treaty in 1689 was the first formal agreement between China and a European power?",
-		answer: "Treaty of Nerchinsk",
-		acceptableAnswers: ["Treaty of Nerchinsk", "Nerchinsk"],
-		topic: "History",
-		datasetIndex: 507,
+			"Which English-born Australian serial killer was known as 'The Baby Farming Murderess' and executed in 1894?",
+		answer: "Frances Knorr",
+		acceptableAnswers: ["Frances Knorr", "Knorr"],
+		topic: "Crime History",
+		datasetIndex: 813,
 	},
 	{
 		question:
-			"Which explorer's expedition first fully explored the Atlantic coast of Patagonia in 1520?",
-		answer: "Ferdinand Magellan",
-		acceptableAnswers: ["Ferdinand Magellan", "Magellan", "Fernão de Magalhães"],
-		topic: "Exploration",
-		datasetIndex: 542,
+			"Which nematode species is a simultaneous hermaphrodite that primarily reproduces by self-fertilization?",
+		answer: "Caenorhabditis elegans",
+		acceptableAnswers: ["Caenorhabditis elegans", "C. elegans"],
+		topic: "Biology",
+		datasetIndex: 817,
 	},
 	{
-		question: "In what year did construction of the Parthenon begin?",
-		answer: "447 BC",
-		acceptableAnswers: ["447", "447 BC", "447 BCE"],
+		question:
+			"Which Indo-Greek king issued coinage around 180 BCE bearing images related to Vāsudeva-Krishna?",
+		answer: "Agathocles",
+		acceptableAnswers: ["Agathocles"],
+		topic: "Ancient History",
+		datasetIndex: 858,
+	},
+	{
+		question:
+			"What is the name of the magnesium alloy historically used by German military aircraft during World War II?",
+		answer: "Elektron",
+		acceptableAnswers: ["Elektron"],
+		topic: "Materials Science",
+		datasetIndex: 1568,
+	},
+	{
+		question:
+			"What is the name of the explosive reactive armour system used on the T-80U tank variant?",
+		answer: "Kontakt-5",
+		acceptableAnswers: ["Kontakt-5", "Kontakt 5"],
+		topic: "Military Technology",
+		datasetIndex: 1574,
+	},
+	{
+		question:
+			"Which GPS-guided extended range rocket was introduced in 2005 for the M270 MLRS system?",
+		answer: "GMLRS",
+		acceptableAnswers: ["GMLRS", "Guided MLRS"],
+		topic: "Military Technology",
+		datasetIndex: 1534,
+	},
+	{
+		question:
+			"Who was the leader of the Student Revolutionary Directorate that attempted the 1957 Presidential Palace attack in Cuba?",
+		answer: "José Antonio Echeverría",
+		acceptableAnswers: ["José Antonio Echeverría", "Echeverría", "Echeverria"],
 		topic: "History",
-		datasetIndex: 2021,
+		datasetIndex: 1537,
 	},
 	{
-		question: "Which Cambodian king coined the term 'Khmer Rouge' in the 1960s?",
-		answer: "Norodom Sihanouk",
-		acceptableAnswers: ["Norodom Sihanouk", "Sihanouk"],
-		topic: "History",
-		datasetIndex: 65,
+		question:
+			"Which sculptor supervised the sculptural decoration of the Parthenon and created the statue of Athena Parthenos?",
+		answer: "Phidias",
+		acceptableAnswers: ["Phidias", "Pheidias"],
+		topic: "Ancient Art",
+		datasetIndex: 2037,
 	},
 	{
-		question: "Which astronomer first formally described the Andromeda Galaxy around the year 964?",
-		answer: "al-Rahman al-Sufi",
-		acceptableAnswers: [
-			"al-Sufi",
-			"Abd al-Rahman al-Sufi",
-			"al-Rahman al-Sufi",
-			"Al Sufi",
-			"Abd al-Rahman",
-		],
-		topic: "Astronomy",
-		datasetIndex: 520,
+		question:
+			"What is the name of the indigenous people believed to have been the Patagons described by Magellan's expedition?",
+		answer: "Tehuelche",
+		acceptableAnswers: ["Tehuelche"],
+		topic: "Anthropology",
+		datasetIndex: 1581,
 	},
 	{
-		question: "What is the state sports car of Kentucky?",
-		answer: "Chevrolet Corvette",
-		acceptableAnswers: ["Chevrolet Corvette", "Corvette"],
-		topic: "Culture",
-		datasetIndex: 530,
-	},
-
-	// --- Hard (model probably needs tool) ---
-	{
-		question: "What is the meaning of the term 'Utsuro-bune' in Japanese?",
-		answer: "Hollow ship",
-		acceptableAnswers: ["Hollow ship", "hollow boat"],
-		topic: "Japanese folklore",
-		datasetIndex: 0,
+		question:
+			"What pigment is responsible for the white markings on the European garden spider Araneus diadematus?",
+		answer: "Guanine",
+		acceptableAnswers: ["Guanine", "guanine"],
+		topic: "Biology",
+		datasetIndex: 1561,
 	},
 	{
-		question: "Which two brothers are credited with the isolation of tungsten as a metal in 1783?",
-		answer: "Juan José and Fausto Elhuyar",
-		acceptableAnswers: ["Elhuyar", "Juan José", "Fausto Elhuyar", "d'Elhuyar"],
-		topic: "Chemistry",
-		datasetIndex: 6,
+		question: "Which river marks the division between the Northern and Southern Levant?",
+		answer: "Litani River",
+		acceptableAnswers: ["Litani River", "Litani"],
+		topic: "Geography",
+		datasetIndex: 1580,
 	},
 	{
-		question: "What does the name 'Aldi' stand for in German?",
-		answer: "Albrecht Discount",
-		acceptableAnswers: ["Albrecht Discount"],
-		topic: "Business",
-		datasetIndex: 43,
+		question:
+			"What was the name of the gold coin introduced in 1663 that was initially worth 20 shillings?",
+		answer: "Guinea",
+		acceptableAnswers: ["Guinea", "guinea"],
+		topic: "Numismatics",
+		datasetIndex: 1572,
 	},
 	{
-		question: "What is the Hexagrammum Mysticum an example of in Blaise Pascal's 1639 work?",
-		answer: "Hexagrammum Mysticum",
-		acceptableAnswers: [
-			"Hexagrammum Mysticum",
-			"hexagrammum mysticum",
-			"mystic hexagram",
-			"Pascal's theorem",
-		],
-		topic: "Mathematics",
-		datasetIndex: 48,
+		question:
+			"Which Argentine serial killer was known as 'The Death Angel' and was still serving a life sentence as of 2023?",
+		answer: "Robledo Puch",
+		acceptableAnswers: ["Robledo Puch", "Carlos Robledo Puch"],
+		topic: "Crime History",
+		datasetIndex: 1010,
 	},
 	{
 		question:
@@ -182,22 +194,6 @@ export const QUESTIONS: TriviaQuestion[] = [
 		acceptableAnswers: ["Quirico Filopanti", "Filopanti", "Giuseppe Barilli"],
 		topic: "Science/History",
 		datasetIndex: 1520,
-	},
-	{
-		question:
-			"Which historian and ethnologist conducted investigations of the Utsuro-bune story in 1925?",
-		answer: "Yanagita Kunio",
-		acceptableAnswers: ["Yanagita Kunio", "Yanagita", "Kunio Yanagita"],
-		topic: "Japanese History",
-		datasetIndex: 1050,
-	},
-	{
-		question:
-			"What is the name of the radioactive green glass formed from the desert sand melted by the Trinity nuclear test?",
-		answer: "Trinitite",
-		acceptableAnswers: ["Trinitite"],
-		topic: "Science",
-		datasetIndex: 2052,
 	},
 	{
 		question: "Which act formally dissolved the East India Company in 1874?",
@@ -211,14 +207,6 @@ export const QUESTIONS: TriviaQuestion[] = [
 	},
 	{
 		question:
-			"What was the codename used for the PlayStation Vita before its official announcement?",
-		answer: "Next Generation Portable",
-		acceptableAnswers: ["Next Generation Portable", "NGP"],
-		topic: "Technology",
-		datasetIndex: 44,
-	},
-	{
-		question:
 			"Which German general was appointed commander of the Berlin Defence Area on 23 April 1945?",
 		answer: "Helmuth Weidling",
 		acceptableAnswers: ["Helmuth Weidling", "Weidling"],
@@ -227,19 +215,25 @@ export const QUESTIONS: TriviaQuestion[] = [
 	},
 	{
 		question:
-			"Which scientist experimentally verified Einstein's explanation of Brownian motion in 1908?",
-		answer: "Jean Baptiste Perrin",
-		acceptableAnswers: ["Jean Baptiste Perrin", "Perrin", "Jean Perrin"],
-		topic: "Physics",
-		datasetIndex: 2029,
+			"Which historian and ethnologist conducted investigations of the Utsuro-bune story in 1925?",
+		answer: "Yanagita Kunio",
+		acceptableAnswers: ["Yanagita Kunio", "Yanagita", "Kunio Yanagita"],
+		topic: "Japanese History",
+		datasetIndex: 1050,
 	},
 	{
-		question:
-			"What was the name of the yacht that Fidel Castro and his followers used to invade Cuba in 1956?",
-		answer: "Granma",
-		acceptableAnswers: ["Granma"],
-		topic: "History",
-		datasetIndex: 1502,
+		question: "What is the highest mountain on Okinawa Island?",
+		answer: "Mount Yonaha",
+		acceptableAnswers: ["Mount Yonaha", "Yonaha", "Yonaha-dake"],
+		topic: "Geography",
+		datasetIndex: 811,
+	},
+	{
+		question: "Which process is primarily used in China to produce magnesium metal?",
+		answer: "Pidgeon process",
+		acceptableAnswers: ["Pidgeon process", "Pidgeon"],
+		topic: "Chemistry",
+		datasetIndex: 2090,
 	},
 ];
 

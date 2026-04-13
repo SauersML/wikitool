@@ -35,7 +35,8 @@ export type ObscureQuestion = NumericQuestion | StringQuestion;
 // --- System prompt ---
 
 export const SYSTEM_PROMPT =
-	"You are a helpful assistant. Answer the question as precisely as possible. If you have access to a search tool, use it. If you don't know the answer, say \"I don't know\" rather than guessing.";
+	"You are a helpful assistant. Answer the question as precisely as possible. If you have access to a search tool, use it. If you don't know the answer, say \"I don't know\" rather than guessing. " +
+	"End with ANSWER: followed by your precise answer.";
 
 // --- Questions ---
 

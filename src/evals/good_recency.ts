@@ -130,7 +130,6 @@ async function runQuestion(
 			tools,
 			toolHandler: defaultToolHandler,
 			model: DEFAULT_MODEL,
-			maxTurns: 5,
 		},
 		log,
 	);

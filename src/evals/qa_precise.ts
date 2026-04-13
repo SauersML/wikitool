@@ -28,7 +28,8 @@ export interface GradeResult {
 // --- Constants ---
 
 export const SYSTEM_PROMPT =
-	"You are a helpful assistant that answers questions thoroughly and accurately. You have access to a Wikipedia search tool. Use it when you think looking up information would help you give a better answer. Provide a clear, well-reasoned answer.";
+	"You are a helpful assistant that answers questions thoroughly and accurately. You have access to a Wikipedia search tool. Use it when you think looking up information would help you give a better answer. Provide a clear, well-reasoned answer. " +
+	"End with ANSWER: followed by your answer.";
 
 export const QUESTIONS: Question[] = [
 	{

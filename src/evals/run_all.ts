@@ -10,6 +10,8 @@ import { spawn } from "node:child_process";
 const EVALS = [
 	"incorrect_info",
 	"qa_precise",
+	"hle_sauers",
+	"qa_private",
 	"obscure_info",
 	"good_recency",
 	"bad_recency",

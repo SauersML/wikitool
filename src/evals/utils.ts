@@ -113,7 +113,7 @@ export async function runAgentLoop(
 ): Promise<AgentResult> {
 	const model = opts.model ?? DEFAULT_MODEL;
 	const maxTokens = opts.maxTokens ?? 1024;
-	const maxTurns = opts.maxTurns ?? 10;
+	const maxTurns = opts.maxTurns ?? 15;
 	const handler = opts.toolHandler ?? defaultToolHandler;
 	const tools = opts.tools ?? [WIKI_TOOL];
 	const apiTools = tools.length > 0 ? tools : undefined;
@@ -204,6 +204,43 @@ export async function runAgentLoop(
 		messages.push({ role: "user", content: results });
 	}
 
+	// If the loop ended without a text answer (exhausted turns on a tool_use
+	// turn, or last assistant message has no text), force one final turn
+	// without tools so the model produces a text response.
+	const lastEntry = messages.at(-1);
+	const needsForce =
+		// Case 1: last message is tool_results (loop exited mid-tool-use)
+		(lastEntry?.role === "user" &&
+			Array.isArray(lastEntry.content) &&
+			(lastEntry.content as Anthropic.Messages.ToolResultBlockParam[]).some(
+				(b) => b.type === "tool_result",
+			)) ||
+		// Case 2: last assistant message has no text blocks
+		(lastEntry?.role === "assistant" &&
+			Array.isArray(lastEntry.content) &&
+			!(lastEntry.content as Anthropic.Messages.ContentBlock[]).some(
+				(b) => b.type === "text",
+			));
+	if (needsForce) {
+		const forceResponse = await client.messages.create({
+			model,
+			max_tokens: maxTokens,
+			system: opts.system,
+			messages: [
+				...messages,
+				{
+					role: "user",
+					content:
+						"You have reached the tool use limit. Based on the information you have gathered so far, provide your best answer now.",
+				},
+			],
+		});
+		inputTokens += forceResponse.usage.input_tokens;
+		outputTokens += forceResponse.usage.output_tokens;
+		messages.push({ role: "assistant", content: forceResponse.content });
+		turns++;
+	}
+
 	// Extract final answer from last assistant message
 	const lastMsg = messages.at(-1);
 	let answer = "";
@@ -246,6 +283,39 @@ export async function gradeWithModel(prompt: string, model?: string): Promise<st
 export function matchesAny(response: string, acceptableAnswers: string[]): boolean {
 	const lower = response.toLowerCase();
 	return acceptableAnswers.some((a) => lower.includes(a.toLowerCase()));
+}
+
+/**
+ * Extract the final answer from a response that uses an explicit answer pattern.
+ * Looks for patterns like "ANSWER: X", "Final answer: X", "The answer is X", "My answer is X".
+ * Prefers matches that appear later in the response (the final answer, not mid-reasoning mentions).
+ * Returns null if no pattern is found, so callers can fall back to full-response matching.
+ */
+export function extractFinalAnswer(response: string): string | null {
+	const patterns = [
+		/ANSWER\s*:\s*(.+)/i,
+		/Final answer\s*:\s*(.+)/i,
+		/The answer is\s*:?\s*(.+)/i,
+		/My answer is\s*:?\s*(.+)/i,
+		/My answer\s*:\s*(.+)/i,
+	];
+
+	let lastMatch: string | null = null;
+	let lastIndex = -1;
+
+	for (const pattern of patterns) {
+		const global = new RegExp(pattern.source, `${pattern.flags}g`);
+		let match: RegExpExecArray | null;
+		while ((match = global.exec(response)) !== null) {
+			if (match.index > lastIndex) {
+				lastIndex = match.index;
+				// Trim trailing whitespace and period from the extracted answer
+				lastMatch = match[1]!.trim();
+			}
+		}
+	}
+
+	return lastMatch;
 }
 
 export function computeCohensD(group1: number[], group2: number[]): number {

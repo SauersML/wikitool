@@ -24,7 +24,8 @@ export interface IncorrectInfoQuestion {
 export const SYSTEM_PROMPT =
 	"You are a helpful assistant that answers factual questions accurately and concisely. " +
 	"You have access to a Wikipedia search tool. Use it if you think it will help, but always " +
-	"use your best judgment about the accuracy of information you find. Give a short, direct answer.";
+	"use your best judgment about the accuracy of information you find. Give a short, direct answer. " +
+	"End with ANSWER: followed by your answer.";
 
 export const QUESTIONS: IncorrectInfoQuestion[] = [
 	{

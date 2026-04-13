@@ -6,6 +6,7 @@
 import {
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	gradeWithModel,
 	initLog,
 	runAgentLoop,
 	WIKI_TOOL,
@@ -61,7 +62,7 @@ export const QUESTIONS: HLEQuestion[] = parseTsv(tsvContent);
 // --- System prompt ---
 
 export const SYSTEM_PROMPT =
-	"You are a helpful assistant taking a challenging exam. Answer each question as accurately as possible. If you have access to a search tool, use it when you think it would help. For multiple choice questions, clearly state your answer letter. For exact match questions, provide a precise answer.";
+	"You are a helpful assistant taking a challenging exam. Answer each question as accurately as possible. If you have access to a search tool, use it when you think it would help.\n\nIMPORTANT: Always show your reasoning step by step before giving your final answer. Explain your thought process, what you considered, and why you chose your answer.\n\nFor multiple choice questions, reason through the options then clearly state your answer letter. For exact match questions, explain your reasoning then provide a precise answer. For multiple choice, end with ANSWER: followed by the letter. For exact match, end with ANSWER: followed by your answer.";
 
 // --- Judging ---
 
@@ -136,13 +137,67 @@ export function judgeExactMatch(response: string, expectedAnswer: string): boole
 export function extractNumbers(text: string): number[] {
 	const matches = text.match(/[\d,]+\.?\d*/g);
 	if (!matches) return [];
-	return matches
-		.map((m) => Number.parseFloat(m.replace(/,/g, "")))
-		.filter((n) => !Number.isNaN(n));
+	return matches.map((m) => Number.parseFloat(m.replace(/,/g, ""))).filter((n) => !Number.isNaN(n));
 }
 
 function escapeRegex(str: string): string {
 	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// --- Reasoning grading ---
+
+export interface ReasoningGrade {
+	score: number; // 1-5
+	notes: string;
+}
+
+export async function gradeReasoning(
+	question: string,
+	modelResponse: string,
+	referenceRationale: string,
+): Promise<ReasoningGrade> {
+	if (!referenceRationale.trim()) {
+		return { score: 0, notes: "no reference rationale" };
+	}
+
+	const prompt = `You are evaluating the quality of a model's reasoning on an exam question.
+
+QUESTION:
+${question.slice(0, 1500)}
+
+REFERENCE RATIONALE (the correct reasoning):
+${referenceRationale.slice(0, 2000)}
+
+MODEL'S RESPONSE (including its reasoning):
+${modelResponse.slice(0, 2000)}
+
+Grade the model's REASONING (not just the final answer) on a 1-5 scale:
+1 = No reasoning shown, or reasoning is completely wrong/irrelevant
+2 = Some reasoning but misses the key insight or has major logical errors
+3 = Partially correct reasoning — gets some key points but misses important ones
+4 = Mostly correct reasoning — identifies the key insight with minor gaps
+5 = Excellent reasoning — correctly identifies the core logic matching the reference rationale
+
+Respond ONLY with JSON: {"score": N, "notes": "one sentence explanation"}`;
+
+	const raw = await gradeWithModel(prompt);
+	try {
+		const match = raw.match(/\{[^{}]*"score"\s*:\s*\d[^{}]*\}/);
+		if (match) {
+			const parsed = JSON.parse(match[0]);
+			return {
+				score: Math.min(5, Math.max(1, Number(parsed.score) || 1)),
+				notes: String(parsed.notes ?? ""),
+			};
+		}
+	} catch {
+		// fallback
+	}
+	const scoreMatch = raw.match(/"score"\s*:\s*(\d)/);
+	return {
+		score: scoreMatch?.[1] ? Number.parseInt(scoreMatch[1], 10) : 1,
+		notes: "",
+	};
 }
 
 // --- Running ---
@@ -170,8 +225,11 @@ async function runQuestion(
 	const isCorrect = judge(q, result.answer);
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
 
+	// Grade reasoning quality against the reference rationale
+	const reasoning = await gradeReasoning(q.question, result.answer, q.rationale);
+
 	console.log(
-		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
+		`           correct=${isCorrect} reasoning=${reasoning.score}/5 tools=${result.toolCalls.length}`,
 	);
 
 	return {
@@ -185,9 +243,12 @@ async function runQuestion(
 		toolQueries,
 		modelAnswer: result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
 		isCorrect: String(isCorrect),
+		reasoningScore: String(reasoning.score),
+		reasoningNotes: reasoning.notes.replace(/\t/g, " ").replace(/\n/g, " "),
 		turns: String(result.turns),
 		inputTokens: String(result.inputTokens),
 		outputTokens: String(result.outputTokens),
+		durationMs: String(Math.round(result.durationMs)),
 	};
 }
 
@@ -225,9 +286,12 @@ async function main() {
 		"tool_queries",
 		"model_answer",
 		"is_correct",
+		"reasoning_score",
+		"reasoning_notes",
 		"turns",
 		"input_tokens",
 		"output_tokens",
+		"duration_ms",
 	];
 
 	const rows: string[][] = [];
@@ -246,9 +310,12 @@ async function main() {
 				result.toolQueries,
 				result.modelAnswer,
 				result.isCorrect,
+				result.reasoningScore,
+				result.reasoningNotes,
 				result.turns,
 				result.inputTokens,
 				result.outputTokens,
+				result.durationMs,
 			]);
 		}
 	}
@@ -263,11 +330,16 @@ async function main() {
 	const correctWith = withToolRows.filter((r) => r[9] === "true").length;
 	const correctWithout = withoutToolRows.filter((r) => r[9] === "true").length;
 
+	const meanReasoning = (subset: string[][]) => {
+		const scores = subset.map((r) => Number(r[10])).filter((n) => n > 0);
+		return scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+	};
+
 	console.log(
-		`  With tool:    ${correctWith}/${withToolRows.length} correct (${((correctWith / withToolRows.length) * 100).toFixed(1)}%)`,
+		`  With tool:    ${correctWith}/${withToolRows.length} correct (${((correctWith / withToolRows.length) * 100).toFixed(1)}%)  reasoning: ${meanReasoning(withToolRows).toFixed(1)}/5`,
 	);
 	console.log(
-		`  Without tool: ${correctWithout}/${withoutToolRows.length} correct (${((correctWithout / withoutToolRows.length) * 100).toFixed(1)}%)`,
+		`  Without tool: ${correctWithout}/${withoutToolRows.length} correct (${((correctWithout / withoutToolRows.length) * 100).toFixed(1)}%)  reasoning: ${meanReasoning(withoutToolRows).toFixed(1)}/5`,
 	);
 
 	// Breakdown by category
@@ -296,8 +368,8 @@ async function main() {
 	}
 
 	// Token totals
-	const totalInput = rows.reduce((sum, r) => sum + Number(r[11]), 0);
-	const totalOutput = rows.reduce((sum, r) => sum + Number(r[12]), 0);
+	const totalInput = rows.reduce((sum, r) => sum + Number(r[13]), 0);
+	const totalOutput = rows.reduce((sum, r) => sum + Number(r[14]), 0);
 	console.log(`\n  Total tokens: ${totalInput} input, ${totalOutput} output`);
 
 	const tsvPath = await writeTsvResults("hle_sauers", headers, rows);

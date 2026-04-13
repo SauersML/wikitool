@@ -3,8 +3,8 @@ import {
 	judge,
 	judgeExactMatch,
 	judgeMultipleChoice,
-	QUESTIONS,
 	type PrivateQuestion,
+	QUESTIONS,
 } from "../evals/qa_private";
 
 describe("qa_private eval", () => {
@@ -90,15 +90,11 @@ describe("qa_private eval", () => {
 		});
 
 		test("matches reversed string answer", () => {
-			expect(
-				judgeExactMatch('My final answer is "erutrunciteneg"', "erutrunciteneg"),
-			).toBe(true);
+			expect(judgeExactMatch('My final answer is "erutrunciteneg"', "erutrunciteneg")).toBe(true);
 		});
 
 		test("handles set notation answers", () => {
-			expect(judgeExactMatch("The true statements are {1, 2, 3, 5}.", "{1, 2, 3, 5}")).toBe(
-				true,
-			);
+			expect(judgeExactMatch("The true statements are {1, 2, 3, 5}.", "{1, 2, 3, 5}")).toBe(true);
 			expect(judgeExactMatch("The answer is {5, 6}.", "{5, 6}")).toBe(true);
 		});
 

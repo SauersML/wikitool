@@ -1,30 +1,30 @@
 {
-  "name": "wikisearch",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "test": "bun run index.ts",
-    "cf-typegen": "wrangler types",
-    "lint": "biome check .",
-    "format": "biome check --write .",
-    "evals": "bun run src/evals/run_all.ts",
-    "evals:parallel": "bun run src/evals/run_all.ts --parallel"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.4.11",
-    "@cloudflare/workers-types": "^4.20260412.1",
-    "@types/bun": "latest",
-    "wrangler": "^4.81.1"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.88.0",
-    "agents": "^0.10.1",
-    "zod": "^4.3.6"
-  }
+	"name": "wikisearch",
+	"module": "index.ts",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"test": "bun run index.ts",
+		"cf-typegen": "wrangler types",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"evals": "bun run src/evals/run_all.ts",
+		"evals:parallel": "bun run src/evals/run_all.ts --parallel"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.11",
+		"@cloudflare/workers-types": "^4.20260412.1",
+		"@types/bun": "latest",
+		"wrangler": "^4.81.1"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.88.0",
+		"agents": "^0.10.1",
+		"zod": "^4.3.6"
+	}
 }

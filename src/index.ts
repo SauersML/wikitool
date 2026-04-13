@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
+import { serveHealth, serveLanding } from "./site";
 import { QUERY_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME } from "./tool/prompt";
 import { createSeenPages, type SeenPages, searchWikipedia } from "./tool/search";
 
@@ -30,6 +31,7 @@ export default {
 		if (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/")) {
 			return WikiSearchMCP.serve("/mcp").fetch(request, env, ctx);
 		}
-		return new Response("WikiSearch MCP Server. Connect at /mcp", { status: 200 });
+		if (url.pathname === "/health") return serveHealth();
+		return serveLanding();
 	},
 };

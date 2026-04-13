@@ -24,6 +24,18 @@ export const WIKI_TOOL: Anthropic.Messages.Tool = {
 	},
 };
 
+/** Server-side code execution sandbox (Python + Bash). No client handler needed. */
+export const CODE_EXECUTION_TOOL: Anthropic.Messages.CodeExecutionTool20250825 = {
+	type: "code_execution_20250825",
+	name: "code_execution",
+};
+
+/** Server-side web search. No client handler needed. */
+export const WEB_SEARCH_TOOL: Anthropic.Messages.WebSearchTool20260209 = {
+	type: "web_search_20260209",
+	name: "web_search",
+};
+
 // --- Types ---
 
 export interface ToolCallRecord {
@@ -49,7 +61,7 @@ export type ToolHandler = (name: string, input: Record<string, unknown>) => Prom
 export interface RunOptions {
 	system: string;
 	userMessage: string;
-	tools?: Anthropic.Messages.Tool[];
+	tools?: Anthropic.Messages.ToolUnion[];
 	toolHandler?: ToolHandler;
 	model?: string;
 	maxTokens?: number;
@@ -67,20 +79,6 @@ export function createToolHandler(seen: SeenContent): ToolHandler {
 		}
 		return `Unknown tool: ${name}`;
 	};
-}
-
-/**
- * Stateless tool handler — no dedup across calls.
- * Prefer createToolHandler() for multi-turn conversations.
- */
-export async function defaultToolHandler(
-	name: string,
-	input: Record<string, unknown>,
-): Promise<string> {
-	if (name === TOOL_NAME) {
-		return searchWikipedia(input["query"] as string);
-	}
-	return `Unknown tool: ${name}`;
 }
 
 export { createSeenContent, type SeenContent };
@@ -183,10 +181,16 @@ export async function runAgentLoop(
 			break;
 		}
 
-		// Process tool calls
+		// Process client tool calls only (server tools like code_execution
+		// and web_search are handled automatically by the API).
 		const toolUseBlocks = response.content.filter(
 			(b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use",
 		);
+
+		// Safety: if stop_reason was tool_use but only server tools fired, break
+		if (toolUseBlocks.length === 0) {
+			break;
+		}
 
 		const results: Anthropic.Messages.ToolResultBlockParam[] = [];
 		for (const block of toolUseBlocks) {
@@ -291,7 +295,8 @@ export async function gradeWithModel(prompt: string, model?: string): Promise<st
 		messages: [{ role: "user", content: prompt }],
 	});
 	const text = response.content.find((b): b is Anthropic.Messages.TextBlock => b.type === "text");
-	return text?.text ?? "";
+	if (!text) throw new Error("Grader returned no text block");
+	return text.text;
 }
 
 // --- Helpers ---
@@ -332,6 +337,40 @@ export function extractFinalAnswer(response: string): string | null {
 	}
 
 	return lastMatch;
+}
+
+/**
+ * Two-sided paired permutation test.
+ * Exact enumeration when n ≤ 20 (2^n permutations), otherwise 50 000 random.
+ * Returns observed mean difference (a − b) and two-tailed p-value.
+ */
+export function pairedPermutationTest(a: number[], b: number[]): { diff: number; p: number } {
+	const n = a.length;
+	if (n !== b.length || n === 0) return { diff: 0, p: 1 };
+
+	const diffs = a.map((v, i) => v - b[i]!);
+	const observed = diffs.reduce((s, d) => s + d, 0);
+	if (observed === 0) return { diff: 0, p: 1 };
+
+	const exact = n <= 20;
+	const perms = exact ? 1 << n : 50_000;
+	let extreme = 0;
+
+	if (exact) {
+		for (let mask = 0; mask < perms; mask++) {
+			let stat = 0;
+			for (let i = 0; i < n; i++) stat += mask & (1 << i) ? -diffs[i]! : diffs[i]!;
+			if (Math.abs(stat) >= Math.abs(observed)) extreme++;
+		}
+	} else {
+		for (let p = 0; p < perms; p++) {
+			let stat = 0;
+			for (let i = 0; i < n; i++) stat += Math.random() < 0.5 ? -diffs[i]! : diffs[i]!;
+			if (Math.abs(stat) >= Math.abs(observed)) extreme++;
+		}
+	}
+
+	return { diff: observed / n, p: extreme / perms };
 }
 
 export function computeCohensD(group1: number[], group2: number[]): number {

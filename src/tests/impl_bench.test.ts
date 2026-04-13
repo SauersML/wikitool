@@ -24,29 +24,13 @@ describe("parseGradeFromOutput", () => {
 		expect(result.ran_successfully).toBe(false);
 	});
 
-	test("falls back to regex when JSON is malformed", () => {
-		const output = `"correctness": 9 and "helpfulness": 7 and "elegance": 8 and "completion": 6 and "ran_successfully": true`;
-		const result = parseGradeFromOutput(output);
-		expect(result.correctness).toBe(9);
-		expect(result.helpfulness).toBe(7);
-		expect(result.elegance).toBe(8);
-		expect(result.completion).toBe(6);
-		expect(result.ran_successfully).toBe(true);
+	test("throws on output with no JSON block", () => {
+		expect(() => parseGradeFromOutput("I couldn't evaluate the code.")).toThrow();
 	});
 
-	test("returns defaults for unparseable output", () => {
-		const result = parseGradeFromOutput("I couldn't evaluate the code.");
-		expect(result.correctness).toBe(1);
-		expect(result.helpfulness).toBe(1);
-		expect(result.elegance).toBe(1);
-		expect(result.completion).toBe(1);
-		expect(result.ran_successfully).toBe(false);
-	});
-
-	test("handles partial matches", () => {
-		const output = `"correctness": 10 is clear but rest is ambiguous`;
-		const result = parseGradeFromOutput(output);
-		expect(result.correctness).toBe(10);
-		expect(result.helpfulness).toBe(1);
+	test("throws on output with no correctness JSON", () => {
+		expect(() =>
+			parseGradeFromOutput('"correctness": 9 and "helpfulness": 7 without JSON braces'),
+		).toThrow();
 	});
 });

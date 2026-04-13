@@ -105,9 +105,12 @@ async function getPageContent(title: string): Promise<PageData> {
 	const data = (await res.json()) as any;
 	if (data.error) throw new Error(data.error.info);
 
+	// Resolve transcluded infoboxes (e.g. {{Infobox hafnium}}) before parsing
+	const wikitext = await resolveTranscludedInfobox(data.parse.title, data.parse.wikitext);
+
 	return {
 		title: data.parse.title,
-		wikitext: data.parse.wikitext,
+		wikitext,
 		// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
 		sections: (data.parse.sections as any[]).map((s) => ({
 			level: Number.parseInt(s.level, 10),
@@ -187,6 +190,86 @@ export function preserveNumericTemplates(text: string): string {
 	);
 
 	return t;
+}
+
+// --- Transcluded infobox resolution ---
+// Some articles (all chemical elements, some biology/geography) use {{Infobox X}}
+// with no inline parameters — the data lives on a separate template page.
+// We detect these and fetch the expanded HTML to extract key-value pairs.
+
+const TRANSCLUDED_INFOBOX_RE = /\{\{\s*[Ii]nfobox\s+([^{}|]+?)\s*\}\}/;
+
+function cleanInfoboxHtml(html: string): string {
+	let t = html;
+	// Convert wikilinks: [[target|display]] → display, [[target]] → target
+	t = t.replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, "$2");
+	t = t.replace(/\[\[([^\]]*)\]\]/g, "$1");
+	// Strip HTML tags
+	t = t.replace(/<[^>]*>/g, "");
+	// Decode common HTML entities
+	t = t.replace(/&nbsp;/g, " ");
+	t = t.replace(/&#x20;/g, " ");
+	t = t.replace(/&#x200b;/g, "");
+	t = t.replace(/&#x23;/g, "#");
+	t = t.replace(/&#91;/g, "[");
+	t = t.replace(/&#93;/g, "]");
+	t = t.replace(/&amp;/g, "&");
+	t = t.replace(/&lt;/g, "<");
+	t = t.replace(/&gt;/g, ">");
+	t = t.replace(/&quot;/g, '"');
+	t = t.replace(/&#\d+;/g, "");
+	t = t.replace(/&#x[\da-fA-F]+;/g, "");
+	// Collapse whitespace
+	t = t.replace(/\s+/g, " ").trim();
+	return t;
+}
+
+function parseInfoboxHtml(html: string): Array<{ key: string; value: string }> {
+	const pairs: Array<{ key: string; value: string }> = [];
+	const re =
+		/<th[^>]*class="infobox-label"[^>]*>([\s\S]*?)<\/th>\s*<td[^>]*class="infobox-data"[^>]*>([\s\S]*?)<\/td>/gi;
+	for (let m = re.exec(html); m !== null; m = re.exec(html)) {
+		const key = cleanInfoboxHtml(m[1]!);
+		const value = cleanInfoboxHtml(m[2]!);
+		if (!key || !value || value.length < 2) continue;
+		if (/\.(jpg|jpeg|png|svg|gif|webp)$/i.test(value)) continue;
+		pairs.push({ key, value });
+	}
+	return pairs;
+}
+
+/**
+ * Detect transcluded infoboxes ({{Infobox X}} with no parameters) in the raw
+ * wikitext and replace them with extracted key-value plain text by fetching
+ * the expanded HTML from the API.
+ */
+async function resolveTranscludedInfobox(pageTitle: string, wikitext: string): Promise<string> {
+	const match = TRANSCLUDED_INFOBOX_RE.exec(wikitext);
+	if (!match) return wikitext;
+	try {
+		const params = new URLSearchParams({
+			action: "expandtemplates",
+			title: pageTitle,
+			text: match[0],
+			prop: "wikitext",
+			format: "json",
+			formatversion: "2",
+		});
+		const res = await fetch(`${WIKI_API}?${params}`, {
+			headers: { "User-Agent": UA, "Api-User-Agent": UA },
+		});
+		if (!res.ok) return wikitext;
+		// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
+		const data = (await res.json()) as any;
+		const html: string | undefined = data?.expandtemplates?.wikitext;
+		if (!html) return wikitext;
+		const pairs = parseInfoboxHtml(html);
+		if (pairs.length === 0) return wikitext;
+		const lines = pairs.map((p) => `${p.key}: ${p.value}`);
+		return wikitext.replace(match[0], `\n${lines.join("\n")}\n`);
+	} catch {
+		return wikitext;
+	}
 }
 
 /**
@@ -977,6 +1060,8 @@ function filterAndCheckNovelty(
 	return { filtered: novel.join("\n\n"), hasNovel };
 }
 
+const MAX_PAGE_CACHE = 50;
+
 /** Fetch page content, using the SeenContent page cache when available. */
 async function getPageContentCached(title: string, seen?: SeenContent): Promise<PageData> {
 	if (seen) {
@@ -984,7 +1069,14 @@ async function getPageContentCached(title: string, seen?: SeenContent): Promise<
 		if (cached) return cached;
 	}
 	const page = await getPageContent(title);
-	if (seen) seen.pageCache.set(title, page);
+	if (seen) {
+		// Evict oldest entry when cache is full (Map preserves insertion order)
+		if (seen.pageCache.size >= MAX_PAGE_CACHE) {
+			const oldest = seen.pageCache.keys().next().value;
+			if (oldest !== undefined) seen.pageCache.delete(oldest);
+		}
+		seen.pageCache.set(title, page);
+	}
 	return page;
 }
 

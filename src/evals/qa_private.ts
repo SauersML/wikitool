@@ -8,6 +8,7 @@ import {
 	extractFinalAnswer,
 	gradeWithModel,
 	initLog,
+	pairedPermutationTest,
 	runAgentLoop,
 	WIKI_TOOL,
 	writeTsvResults,
@@ -54,6 +55,19 @@ export const QUESTIONS: PrivateQuestion[] = parseTsv(tsvContent);
 
 // --- Judging ---
 
+/**
+ * Extract the conclusion portion of a response for fallback answer matching.
+ * Only searches the tail so that letters/values mentioned while reasoning
+ * through options don't get mistaken for the final answer.
+ */
+function responseTail(response: string): string {
+	const lastPara = response.lastIndexOf("\n\n");
+	if (lastPara >= 0 && response.length - lastPara <= 1000) {
+		return response.slice(lastPara);
+	}
+	return response.slice(-500);
+}
+
 export function judgeMultipleChoice(response: string, expectedAnswer: string): boolean {
 	// Try extracting from an explicit ANSWER line first
 	const finalAnswer = extractFinalAnswer(response);
@@ -71,22 +85,24 @@ export function judgeMultipleChoice(response: string, expectedAnswer: string): b
 		return extractedPatterns.some((p) => p.test(finalAnswer));
 	}
 
-	// Fall back to full-response matching
+	// No explicit ANSWER: line found. Search only the tail of the response
+	// to avoid matching the correct letter mentioned during reasoning.
+	const tail = responseTail(response);
+
 	// For compound answers like "C, C, C, E, A", do exact string matching.
 	if (expectedAnswer.includes(",")) {
-		return response.includes(expectedAnswer);
+		return tail.includes(expectedAnswer);
 	}
 	// For single-letter answers, check for standalone letter (not part of a word).
-	// Match the letter preceded by a word boundary or start, and followed by a word boundary or end.
 	const escaped = expectedAnswer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const regex = new RegExp(`(?:^|\\b|\\s|\\()${escaped}(?:\\b|\\s|\\.|,|\\)|$)`, "i");
-	return regex.test(response);
+	return regex.test(tail);
 }
 
 export function judgeExactMatch(response: string, expectedAnswer: string): boolean {
 	// Try to extract a final answer line first to avoid matching incidental mentions
 	const finalAnswer = extractFinalAnswer(response);
-	const textToJudge = finalAnswer ?? response;
+	const textToJudge = finalAnswer ?? responseTail(response);
 
 	// For complex answers with braces, brackets, or commas, do exact string matching
 	if (
@@ -155,23 +171,12 @@ Grade the model's REASONING (not just the final answer) on a 1-5 scale:
 Respond ONLY with JSON: {"score": N, "notes": "one sentence explanation"}`;
 
 	const raw = await gradeWithModel(prompt);
-	try {
-		const match = raw.match(/\{[^{}]*"score"\s*:\s*\d[^{}]*\}/);
-		if (match) {
-			const parsed = JSON.parse(match[0]);
-			return {
-				score: Math.min(5, Math.max(1, Number(parsed.score) || 1)),
-				notes: String(parsed.notes ?? ""),
-			};
-		}
-	} catch {
-		// fallback
-	}
-	const scoreMatch = raw.match(/"score"\s*:\s*(\d)/);
-	return {
-		score: scoreMatch?.[1] ? Number.parseInt(scoreMatch[1], 10) : 1,
-		notes: "",
-	};
+	const match = raw.match(/\{[^{}]*"score"\s*:\s*\d[^{}]*\}/);
+	if (!match) throw new Error(`Failed to parse reasoning grade: ${raw.slice(0, 200)}`);
+	const parsed = JSON.parse(match[0]);
+	const score = Number(parsed.score);
+	if (score < 1 || score > 5) throw new Error(`Reasoning score out of range: ${score}`);
+	return { score, notes: String(parsed.notes) };
 }
 
 export function judge(question: PrivateQuestion, response: string): boolean {
@@ -318,6 +323,12 @@ async function main() {
 	console.log(
 		`  Without tool: ${correctWithout}/${withoutToolRows.length} correct (${((correctWithout / withoutToolRows.length) * 100).toFixed(1)}%)  reasoning: ${meanReasoning(withoutToolRows).toFixed(1)}/5`,
 	);
+
+	const perm = pairedPermutationTest(
+		withToolRows.map((r) => (r[9] === "true" ? 1 : 0)),
+		withoutToolRows.map((r) => (r[9] === "true" ? 1 : 0)),
+	);
+	console.log(`  Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 
 	// Breakdown by category
 	const categories = [...new Set(QUESTIONS.map((q) => q.category))];

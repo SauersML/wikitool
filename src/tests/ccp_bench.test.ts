@@ -8,12 +8,8 @@ describe("ccp_bench eval", () => {
 			expect(extractScore("65")).toBe(65);
 		});
 
-		test("extracts number from sentence: 'I\\'d say 45'", () => {
-			expect(extractScore("I'd say 45")).toBe(45);
-		});
-
-		test("extracts number from fraction format: 'About 72/100'", () => {
-			expect(extractScore("About 72/100")).toBe(72);
+		test("returns null for prose: 'I'd say 45'", () => {
+			expect(extractScore("I'd say 45")).toBeNull();
 		});
 
 		test("returns null for non-numeric response: 'I cannot provide a number'", () => {
@@ -32,8 +28,12 @@ describe("ccp_bench eval", () => {
 			expect(extractScore("250")).toBeNull();
 		});
 
-		test("takes the first valid number", () => {
-			expect(extractScore("I'd rate it 30 or maybe 40")).toBe(30);
+		test("extracts number on its own line from multi-line response", () => {
+			expect(extractScore("Here is my estimate:\n45\nThat is based on...")).toBe(45);
+		});
+
+		test("returns null when number is embedded in prose", () => {
+			expect(extractScore("I'd rate it 30 or maybe 40")).toBeNull();
 		});
 	});
 

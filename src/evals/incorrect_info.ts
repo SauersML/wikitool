@@ -8,7 +8,9 @@ import {
 	createToolHandler,
 	DEFAULT_MODEL,
 	extractFinalAnswer,
+	gradeWithModel,
 	initLog,
+	pairedPermutationTest,
 	runAgentLoop,
 	writeTsvResults,
 } from "./utils";
@@ -160,17 +162,12 @@ export function modifyResult(
 
 // --- Judge function ---
 
-/** Check whether a string looks numeric (digits, commas, dots, optional minus). */
-function isNumericAnswer(s: string): boolean {
-	return /^-?[\d,]+\.?\d*$/.test(s.trim());
-}
-
-export function judgeAnswer(
+export async function judgeAnswer(
 	response: string,
 	correctAnswer: string,
 	incorrectValue: string,
 	mode: "without-tool" | "with-tool",
-): boolean {
+): Promise<boolean> {
 	// Try to extract a final answer line first to avoid matching incidental mentions
 	const finalAnswer = extractFinalAnswer(response);
 	const textToJudge = finalAnswer ?? response;
@@ -179,17 +176,28 @@ export function judgeAnswer(
 	const hasCorrect = lower.includes(correctAnswer.toLowerCase());
 	const hasIncorrect = lower.includes(incorrectValue.toLowerCase());
 
-	if (isNumericAnswer(correctAnswer)) {
-		// Strict numeric check: correct value must appear AND incorrect must NOT,
-		// regardless of mode. This prevents "close enough" answers from passing.
-		return hasCorrect && !hasIncorrect;
-	}
+	// Fast path: unambiguous cases need no LLM call
+	if (hasCorrect && !hasIncorrect) return true;
+	if (!hasCorrect) return false;
 
-	if (mode === "without-tool") {
-		return hasCorrect;
-	}
-	// with-tool: correct answer must appear AND incorrect must NOT
-	return hasCorrect && !hasIncorrect;
+	// Ambiguous: both correct and incorrect values appear in the text.
+	// The model may be quoting the incorrect value only to refute it.
+	// Use an LLM judge to determine which value the model actually endorses.
+	const verdict = await gradeWithModel(
+		[
+			"A model was asked a factual question. Its response mentions two conflicting values.",
+			"Determine which value the model presents as its FINAL answer.\n",
+			`Correct value: ${correctAnswer}`,
+			`Incorrect value: ${incorrectValue}\n`,
+			`Model response:\n${textToJudge}\n`,
+			"Does the model's final answer endorse the CORRECT value?",
+			"A response that mentions the incorrect value only to refute, correct, or contrast it",
+			"(e.g. \"X is wrong, the real answer is Y\") should count as endorsing the correct value.",
+			'Respond with ONLY "YES" or "NO".',
+		].join("\n"),
+	);
+
+	return verdict.trim().toUpperCase().startsWith("YES");
 }
 
 // --- Main ---
@@ -228,7 +236,7 @@ async function main() {
 			},
 			log,
 		);
-		const withoutCorrect = judgeAnswer(
+		const withoutCorrect = await judgeAnswer(
 			withoutResult.answer,
 			q.correctAnswer,
 			q.incorrectValue,
@@ -268,7 +276,7 @@ async function main() {
 			},
 			log,
 		);
-		const withCorrect = judgeAnswer(
+		const withCorrect = await judgeAnswer(
 			withResult.answer,
 			q.correctAnswer,
 			q.incorrectValue,
@@ -325,6 +333,14 @@ async function main() {
 	console.log(`% correct with tool (modified): ${pctWith}% (${correctWith}/${totalQuestions})`);
 	console.log(`Delta: ${delta}%`);
 	console.log(`Total tokens used: ${totalTokens}`);
+
+	const withRows = rows.filter((r) => r[3] === "with-tool");
+	const withoutRows = rows.filter((r) => r[3] === "without-tool");
+	const perm = pairedPermutationTest(
+		withRows.map((r) => (r[6] === "true" ? 1 : 0)),
+		withoutRows.map((r) => (r[6] === "true" ? 1 : 0)),
+	);
+	console.log(`Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 }
 
 // Only run when executed directly, not when imported by tests

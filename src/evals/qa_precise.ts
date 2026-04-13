@@ -1,9 +1,18 @@
 // QA Capability eval for the Wikipedia search tool
 // Measures how much the tool improves the model's ability to answer hard questions.
-// Grading uses Claude Sonnet via headless CLI with web search for verification.
+// Grading uses Claude Sonnet via API with web search for verification.
 // Usage: bun src/evals/qa_precise.ts [questionIndex]
 
-import { DEFAULT_MODEL, initLog, runAgentLoop, WIKI_TOOL, writeTsvResults } from "./utils";
+import {
+	DEFAULT_MODEL,
+	GRADER_MODEL,
+	initLog,
+	pairedPermutationTest,
+	runAgentLoop,
+	WEB_SEARCH_TOOL,
+	WIKI_TOOL,
+	writeTsvResults,
+} from "./utils";
 
 // --- Types ---
 
@@ -121,37 +130,32 @@ export function parseGradeResponse(raw: string): GradeResult {
 			return { correct: parsed.correct, quality: parsed.quality };
 		}
 	} catch {
-		// Fall through to regex fallback
+		// Not top-level JSON — try extracting embedded JSON object
 	}
 
-	// Try extracting JSON object from the string
 	const jsonMatch = raw.match(/\{[^}]*\}/);
 	if (jsonMatch) {
-		try {
-			const parsed = JSON.parse(jsonMatch[0]);
-			if (typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
-				return { correct: parsed.correct, quality: parsed.quality };
-			}
-		} catch {
-			// Fall through to regex fallback
+		const parsed = JSON.parse(jsonMatch[0]);
+		if (typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
+			return { correct: parsed.correct, quality: parsed.quality };
 		}
 	}
 
-	// Regex fallback
-	const correctMatch = raw.match(/"correct"\s*:\s*(true|false)/);
-	const qualityMatch = raw.match(/"quality"\s*:\s*(\d)/);
-
-	const correct = correctMatch?.[1] === "true";
-	const quality = qualityMatch?.[1] ? Number.parseInt(qualityMatch[1], 10) : 1;
-
-	return { correct, quality };
+	throw new Error(`Failed to parse grade response: ${raw.slice(0, 200)}`);
 }
 
-// --- Grading via Sonnet CLI ---
+// --- Grading via Sonnet API + web search ---
 
 async function gradeWithSonnet(prompt: string): Promise<string> {
-	const result = await Bun.$`echo ${prompt} | claude -p --model sonnet`.text();
-	return result.trim();
+	const result = await runAgentLoop({
+		system: "You are an expert evaluator. Use web search to verify facts before grading.",
+		userMessage: prompt,
+		tools: [WEB_SEARCH_TOOL],
+		model: GRADER_MODEL,
+		maxTokens: 1024,
+		maxTurns: 10,
+	});
+	return result.answer.trim();
 }
 
 // --- Main ---
@@ -300,6 +304,21 @@ async function main() {
 		`  Without tool: ${withoutCorrectPct.toFixed(0)}% correct, mean quality ${withoutMeanQuality.toFixed(2)}`,
 	);
 	console.log(`  Total tokens: ${totalInputTokens} input, ${totalOutputTokens} output`);
+
+	const permCorrect = pairedPermutationTest(
+		withToolResults.map((r) => (r.correct ? 1 : 0)),
+		withoutToolResults.map((r) => (r.correct ? 1 : 0)),
+	);
+	const permQuality = pairedPermutationTest(
+		withToolResults.map((r) => r.quality),
+		withoutToolResults.map((r) => r.quality),
+	);
+	console.log(
+		`  Permutation test (correct): diff=${permCorrect.diff.toFixed(3)}, p=${permCorrect.p.toFixed(4)}`,
+	);
+	console.log(
+		`  Permutation test (quality): diff=${permQuality.diff.toFixed(3)}, p=${permQuality.p.toFixed(4)}`,
+	);
 }
 
 // Only run when executed directly, not when imported

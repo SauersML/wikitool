@@ -1,18 +1,27 @@
-// Implementation Benchmark — uses Claude Code headless mode
+// Implementation Benchmark — uses Claude API with server-side code execution
 //
 // Flow per algorithm:
-//   1. Sonnet implements the algorithm in an isolated worktree (with or without wiki tool)
-//   2. Opus evaluates: reads the code, attempts to run it, grades on rubric
+//   1. Sonnet implements the algorithm (with or without wiki tool) using code_execution sandbox
+//   2. Opus evaluates: reads the code, runs it in sandbox, grades on rubric
 //
 // Usage:
 //   bun run src/evals/impl_bench.ts                       — print usage info
 //   bun run src/evals/impl_bench.ts run <index>           — with tool (default)
 //   bun run src/evals/impl_bench.ts run <index> --no-tool — without tool
 //   bun run src/evals/impl_bench.ts all                   — run all 20 in both modes
-//   bun run src/evals/impl_bench.ts eval <index>          — evaluate existing code with Opus
 
 import { mkdir } from "node:fs/promises";
-import { initLog, writeTsvResults } from "./utils";
+import type Anthropic from "@anthropic-ai/sdk";
+import {
+	CODE_EXECUTION_TOOL,
+	createSeenContent,
+	createToolHandler,
+	initLog,
+	pairedPermutationTest,
+	runAgentLoop,
+	WIKI_TOOL,
+	writeTsvResults,
+} from "./utils";
 
 // --- Types ---
 
@@ -34,17 +43,17 @@ export interface GradeResult {
 export interface RunResult {
 	algorithm: string;
 	mode: string;
-	worktree: string;
-	branch: string;
-	codePath: string;
-	stdout: string;
-	exitCode: number;
+	code: string;
+	turns: number;
+	usedTool: boolean;
+	inputTokens: number;
+	outputTokens: number;
 }
 
 // --- Constants ---
 
-const SONNET = "sonnet";
-const OPUS = "opus";
+const SONNET = "claude-sonnet-4-6";
+const OPUS = "claude-opus-4-6";
 
 export const QUESTIONS: AlgorithmQuestion[] = [
 	{
@@ -176,108 +185,133 @@ function sanitizeName(name: string): string {
 		.replace(/-+$/, "");
 }
 
-function worktreeName(algorithm: string, mode: string): string {
-	return `impl-${sanitizeName(algorithm)}-${mode}`;
+/** Find the last ```python (or any ```) code block in a string. */
+function lastCodeBlock(text: string): string | null {
+	const pyBlocks = [...text.matchAll(/```python\n([\s\S]*?)```/g)];
+	if (pyBlocks.length > 0) return pyBlocks.at(-1)![1]!.trim();
+
+	const anyBlocks = [...text.matchAll(/```\n([\s\S]*?)```/g)];
+	if (anyBlocks.length > 0) return anyBlocks.at(-1)![1]!.trim();
+
+	return null;
 }
 
-async function runClaude(
-	args: string[],
-	timeoutMs = 600_000,
-	cwd?: string,
-): Promise<{ stdout: string; exitCode: number }> {
-	const proc = Bun.spawn(["claude", ...args], {
-		stdout: "pipe",
-		stderr: "pipe",
-		env: { ...process.env, CLAUDE_CODING_AGENT: "1" },
-		...(cwd ? { cwd } : {}),
-	});
+/**
+ * Extract Python code from the agent result.
+ * 1. Scan the final answer (last text block) for the last fenced code block.
+ * 2. If missing, scan ALL assistant text blocks in the conversation (newest first)
+ *    — covers the case where the model wrote code via code_execution but didn't
+ *    repeat it in its closing remarks.
+ * 3. Last resort: return raw answer text (evaluator will flag it as broken).
+ */
+function extractCode(
+	answer: string,
+	messages: Anthropic.Messages.MessageParam[],
+): string {
+	// 1. Final answer text
+	const fromAnswer = lastCodeBlock(answer);
+	if (fromAnswer) return fromAnswer;
 
-	const timeout = setTimeout(() => proc.kill(), timeoutMs);
-	const stdout = await new Response(proc.stdout).text();
-	const exitCode = await proc.exited;
-	clearTimeout(timeout);
-	return { stdout, exitCode };
+	// 2. Scan all assistant text blocks, newest first
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i]!;
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		const blocks = msg.content as Array<{ type: string; text?: string }>;
+		for (let j = blocks.length - 1; j >= 0; j--) {
+			const b = blocks[j]!;
+			if (b.type === "text" && b.text) {
+				const code = lastCodeBlock(b.text);
+				if (code) return code;
+			}
+		}
+	}
+
+	// 3. Last resort
+	return answer;
 }
 
-// --- Implementation step (Sonnet) ---
+// --- Implementation step (Sonnet via API + code_execution) ---
 
 async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	const q = QUESTIONS[index]!;
 	const mode = useTool ? "with-tool" : "no-tool";
-	const wt = worktreeName(q.name, mode);
 
 	const toolInstruction = useTool
-		? `You have access to the search_wikipedia MCP tool. Use it to look up the Wikipedia article "${q.article}" for algorithm details before implementing.`
+		? `You have access to a Wikipedia search tool. Use it to look up the Wikipedia article "${q.article}" for algorithm details before implementing.`
 		: "Do NOT use the Wikipedia search tool. Implement purely from your own knowledge.";
 
-	const prompt = [
-		`${q.prompt}`,
-		"",
+	const system = [
+		"You are an expert Python programmer. You have access to a code execution sandbox where you can write and run Python code.",
 		toolInstruction,
+	].join("\n");
+
+	const userMessage = [
+		q.prompt,
 		"",
-		`Create a single file called \`${sanitizeName(q.name)}.py\` in the repo root with your complete implementation.`,
-		"Include a brief test/demo in an `if __name__ == '__main__':` block that exercises the main functionality and prints results.",
-		"Make sure the code actually runs without errors.",
+		"Create a complete, standalone Python implementation.",
+		"Include a test/demo in an `if __name__ == '__main__':` block that exercises the main functionality and prints results.",
+		"Use the code execution sandbox to write and test the code. Make sure it runs without errors.",
+		"",
+		"IMPORTANT: After you are done, output the complete final Python code in your response as a single ```python fenced code block.",
 	].join("\n");
 
 	console.log(`\n[${index}] ${q.name} (${mode})`);
-	console.log(`  Worktree: ${wt}`);
 	console.log(`  Launching Sonnet...`);
 
-	const allowedTools = useTool
-		? "Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia"
-		: "Edit,Write,Bash,Read,Glob,Grep";
+	const tools: Anthropic.Messages.ToolUnion[] = [CODE_EXECUTION_TOOL];
+	if (useTool) tools.push(WIKI_TOOL);
 
-	const { stdout, exitCode } = await runClaude(
-		[
-			"-w",
-			wt,
-			"--model",
-			SONNET,
-			"-p",
-			prompt,
-			"--allowedTools",
-			allowedTools,
-			"--max-turns",
-			"100",
-		],
-		600_000,
-	);
+	const result = await runAgentLoop({
+		system,
+		userMessage,
+		tools,
+		toolHandler: useTool ? createToolHandler(createSeenContent()) : undefined,
+		model: SONNET,
+		maxTokens: 16384,
+		maxTurns: 50,
+	});
 
-	const codePath = `.claude/worktrees/${wt}/${sanitizeName(q.name)}.py`;
-	console.log(`  Sonnet exit code: ${exitCode}`);
-	console.log(`  Code path: ${codePath}`);
+	const code = extractCode(result.answer, result.messages);
 
-	// Save stdout log
+	console.log(`  Sonnet done: ${result.turns} turns, tool_used=${result.usedTool}`);
+
+	// Save logs
 	const logDir = `${import.meta.dir}/../../logs`;
 	await mkdir(logDir, { recursive: true });
-	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_sonnet.log`, stdout);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_sonnet.log`, result.answer);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_code.py`, code);
 
 	return {
 		algorithm: q.name,
 		mode,
-		worktree: wt,
-		branch: `worktree-${wt}`,
-		codePath,
-		stdout,
-		exitCode,
+		code,
+		turns: result.turns,
+		usedTool: result.usedTool,
+		inputTokens: result.inputTokens,
+		outputTokens: result.outputTokens,
 	};
 }
 
-// --- Evaluation step (Opus) ---
+// --- Evaluation step (Opus via API + code_execution) ---
 
-async function evaluate(index: number, worktreePath: string, mode: string): Promise<GradeResult> {
+async function evaluate(index: number, code: string, mode: string): Promise<GradeResult> {
 	const q = QUESTIONS[index]!;
-	const pyFile = `${sanitizeName(q.name)}.py`;
 
-	const prompt = [
+	const system =
+		"You are an expert Python evaluator. You have access to a code execution sandbox where you can write and run Python code.";
+
+	const userMessage = [
 		`You are evaluating a Python implementation of ${q.name}.`,
 		"",
-		`1. Read the file \`${pyFile}\` in the current directory.`,
-		`2. Try to run it with \`python3 ${pyFile}\` and observe the output.`,
-		"3. If it fails, note the error. Try to understand what went wrong.",
-		"4. Write a few additional test cases and run them to verify correctness.",
-		"5. Grade the implementation on this rubric (1-10 each):",
+		"Here is the implementation:",
+		"```python",
+		code,
+		"```",
+		"",
+		"1. Save this code to a file and run it with `python3`. Observe the output.",
+		"2. If it fails, note the error. Try to understand what went wrong.",
+		"3. Write a few additional test cases and run them to verify correctness.",
+		"4. Grade the implementation on this rubric (1-10 each):",
 		"   - CORRECTNESS: Does it implement the algorithm correctly? Would it produce correct results on all valid inputs?",
 		"   - HELPFULNESS: Good docstrings, comments, examples? Clean, usable API?",
 		"   - ELEGANCE: Well-structured, Pythonic, avoids unnecessary complexity?",
@@ -291,66 +325,44 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 
 	console.log(`  Launching Opus evaluator...`);
 
-	// Run Opus in the worktree directory by setting cwd on the spawned process
-	const wtDir = `${process.cwd()}/.claude/worktrees/${worktreePath}`;
-	const { stdout, exitCode } = await runClaude(
-		[
-			"--model",
-			OPUS,
-			"-p",
-			prompt,
-			"--allowedTools",
-			"Edit,Write,Bash,Read,Glob,Grep",
-			"--max-turns",
-			"100",
-		],
-		600_000,
-		wtDir,
-	);
+	const result = await runAgentLoop({
+		system,
+		userMessage,
+		tools: [CODE_EXECUTION_TOOL],
+		model: OPUS,
+		maxTokens: 16384,
+		maxTurns: 50,
+	});
 
 	// Save Opus log
 	const logDir = `${import.meta.dir}/../../logs`;
-	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.log`, stdout);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.log`, result.answer);
 
-	console.log(`  Opus exit code: ${exitCode}`);
+	console.log(`  Opus done: ${result.turns} turns`);
 
-	// Parse grade from Opus output
-	return parseGradeFromOutput(stdout);
+	return parseGradeFromOutput(result.answer);
 }
 
+// --- Grade parsing ---
+
 export function parseGradeFromOutput(output: string): GradeResult {
-	// Look for JSON block in the output
 	const jsonMatch = output.match(/\{[^{}]*"correctness"\s*:\s*\d+[^{}]*\}/s);
-	if (jsonMatch) {
-		try {
-			const parsed = JSON.parse(jsonMatch[0]);
-			return {
-				correctness: Number(parsed.correctness) || 1,
-				helpfulness: Number(parsed.helpfulness) || 1,
-				elegance: Number(parsed.elegance) || 1,
-				completion: Number(parsed.completion) || 1,
-				ran_successfully: Boolean(parsed.ran_successfully),
-				notes: String(parsed.notes ?? ""),
-			};
-		} catch {
-			// fall through
-		}
+	if (!jsonMatch) throw new Error(`No grade JSON found in output (${output.length} chars)`);
+	const parsed = JSON.parse(jsonMatch[0]);
+	const correctness = Number(parsed.correctness);
+	const helpfulness = Number(parsed.helpfulness);
+	const elegance = Number(parsed.elegance);
+	const completion = Number(parsed.completion);
+	if ([correctness, helpfulness, elegance, completion].some((n) => Number.isNaN(n))) {
+		throw new Error(`Grade JSON has non-numeric fields: ${jsonMatch[0].slice(0, 200)}`);
 	}
-
-	// Regex fallback
-	const get = (key: string) => {
-		const m = output.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
-		return m?.[1] ? Number.parseInt(m[1], 10) : 1;
-	};
-	const ranMatch = output.match(/"ran_successfully"\s*:\s*(true|false)/);
-
 	return {
-		correctness: get("correctness"),
-		helpfulness: get("helpfulness"),
-		elegance: get("elegance"),
-		completion: get("completion"),
-		ran_successfully: ranMatch?.[1] === "true",
-		notes: "",
+		correctness,
+		helpfulness,
+		elegance,
+		completion,
+		ran_successfully: parsed.ran_successfully === true,
+		notes: String(parsed.notes),
 	};
 }
 
@@ -361,7 +373,7 @@ async function runOne(
 	useTool: boolean,
 ): Promise<{ run: RunResult; grade: GradeResult }> {
 	const implResult = await implement(index, useTool);
-	const gradeResult = await evaluate(index, implResult.worktree, implResult.mode);
+	const gradeResult = await evaluate(index, implResult.code, implResult.mode);
 
 	const total =
 		gradeResult.correctness +
@@ -381,8 +393,8 @@ async function runOne(
 // --- Run all ---
 
 async function runAll(): Promise<void> {
-	console.log("Implementation Benchmark — Full Run (Claude Code Headless)");
-	console.log(`Implement: Sonnet | Evaluate: Opus`);
+	console.log("Implementation Benchmark — Claude API + code_execution sandbox");
+	console.log(`Implement: ${SONNET} | Evaluate: ${OPUS}`);
 	console.log(`Algorithms: ${QUESTIONS.length}`);
 	console.log(`Modes: with-tool, no-tool`);
 	console.log("");
@@ -407,7 +419,6 @@ async function runAll(): Promise<void> {
 				index: i,
 				algorithm: q.name,
 				mode: run.mode,
-				worktree: run.worktree,
 				grade: g,
 				total,
 			});
@@ -415,7 +426,6 @@ async function runAll(): Promise<void> {
 			rows.push([
 				q.name,
 				run.mode,
-				run.worktree,
 				String(g.correctness),
 				String(g.helpfulness),
 				String(g.elegance),
@@ -430,7 +440,6 @@ async function runAll(): Promise<void> {
 	const headers = [
 		"algorithm",
 		"mode",
-		"worktree",
 		"correctness",
 		"helpfulness",
 		"elegance",
@@ -452,50 +461,37 @@ async function runAll(): Promise<void> {
 		subset.reduce((sum, r) => sum + Number(r[col]), 0) / subset.length;
 
 	console.log(
-		`  With tool:  mean score ${mean(withTool, 7).toFixed(1)}/40, ran ok ${withTool.filter((r) => r[8] === "true").length}/${withTool.length}`,
+		`  With tool:  mean score ${mean(withTool, 6).toFixed(1)}/40, ran ok ${withTool.filter((r) => r[7] === "true").length}/${withTool.length}`,
 	);
 	console.log(
-		`  No tool:    mean score ${mean(noTool, 7).toFixed(1)}/40, ran ok ${noTool.filter((r) => r[8] === "true").length}/${noTool.length}`,
+		`  No tool:    mean score ${mean(noTool, 6).toFixed(1)}/40, ran ok ${noTool.filter((r) => r[7] === "true").length}/${noTool.length}`,
 	);
-}
 
-// --- Evaluate existing worktree ---
-
-async function evalExisting(index: number): Promise<void> {
-	const q = QUESTIONS[index]!;
-	// Try with-tool worktree first, then no-tool
-	for (const mode of ["with-tool", "no-tool"]) {
-		const wt = worktreeName(q.name, mode);
-		const wtDir = `${process.cwd()}/.claude/worktrees/${wt}`;
-		try {
-			const dir = Bun.file(`${wtDir}/${sanitizeName(q.name)}.py`);
-			if (await dir.exists()) {
-				console.log(`Found ${mode} worktree: ${wt}`);
-				const g = await evaluate(index, wt, mode);
-				const total = g.correctness + g.helpfulness + g.elegance + g.completion;
-				console.log(`\n  Correctness: ${g.correctness}/10`);
-				console.log(`  Helpfulness: ${g.helpfulness}/10`);
-				console.log(`  Elegance:    ${g.elegance}/10`);
-				console.log(`  Completion:  ${g.completion}/10`);
-				console.log(`  Total:       ${total}/40`);
-				console.log(`  Ran:         ${g.ran_successfully}`);
-				if (g.notes) console.log(`  Notes: ${g.notes}`);
-				return;
-			}
-		} catch {
-			// try next mode
+	// Paired permutation test on algorithms that have both modes
+	const withScores: number[] = [];
+	const noScores: number[] = [];
+	for (const wt of withTool) {
+		const nt = noTool.find((r) => r[0] === wt[0]);
+		if (nt) {
+			withScores.push(Number(wt[6]));
+			noScores.push(Number(nt[6]));
 		}
 	}
-	console.error(`No worktree found for "${q.name}". Run it first.`);
+	if (withScores.length > 1) {
+		const perm = pairedPermutationTest(withScores, noScores);
+		console.log(
+			`  Permutation test (n=${withScores.length}): diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`,
+		);
+	}
 }
 
 // --- CLI ---
 
 function printUsage() {
-	console.log("Implementation Benchmark — Claude Code Headless");
+	console.log("Implementation Benchmark — Claude API + code_execution sandbox");
 	console.log("");
-	console.log("  Sonnet implements algorithms in isolated worktrees.");
-	console.log("  Opus evaluates: reads code, runs it, writes tests, grades on rubric.");
+	console.log("  Sonnet implements algorithms using server-side code execution.");
+	console.log("  Opus evaluates: runs code in sandbox, writes tests, grades on rubric.");
 	console.log("");
 	console.log("Usage:");
 	console.log("  bun run src/evals/impl_bench.ts                          — print this help");
@@ -508,17 +504,14 @@ function printUsage() {
 	console.log(
 		"  bun run src/evals/impl_bench.ts all                      — run all 20 in both modes",
 	);
-	console.log(
-		"  bun run src/evals/impl_bench.ts eval <index>             — re-evaluate existing worktree with Opus",
-	);
 	console.log("");
 	console.log(`Algorithms (${QUESTIONS.length}):`);
 	for (let i = 0; i < QUESTIONS.length; i++) {
 		console.log(`  ${String(i).padStart(2)}. ${QUESTIONS[i]!.name}`);
 	}
 	console.log("");
-	console.log("Worktrees created at: .claude/worktrees/impl-<algorithm>-<mode>/");
 	console.log("Logs saved to: logs/impl_bench_<algorithm>_<mode>_{sonnet,opus}.log");
+	console.log("Code saved to: logs/impl_bench_<algorithm>_<mode>_code.py");
 }
 
 async function main() {
@@ -544,18 +537,6 @@ async function main() {
 		await runOne(index, useTool);
 	} else if (command === "all") {
 		await runAll();
-	} else if (command === "eval") {
-		const indexStr = process.argv[3];
-		if (indexStr === undefined) {
-			console.error("Error: provide an algorithm index.");
-			process.exit(1);
-		}
-		const index = Number.parseInt(indexStr, 10);
-		if (Number.isNaN(index) || index < 0 || index >= QUESTIONS.length) {
-			console.error(`Invalid index: ${indexStr}. Must be 0-${QUESTIONS.length - 1}.`);
-			process.exit(1);
-		}
-		await evalExisting(index);
 	} else {
 		console.error(`Unknown command: ${command}`);
 		printUsage();

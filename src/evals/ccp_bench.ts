@@ -10,6 +10,7 @@ import {
 	createToolHandler,
 	DEFAULT_MODEL,
 	initLog,
+	pairedPermutationTest,
 	runAgentLoop,
 	writeTsvResults,
 } from "./utils";
@@ -41,11 +42,10 @@ function replaceCI(text: string, search: string, replacement: string): string {
 
 function appendBeforeClose(xml: string, text: string): string {
 	const marker = "]]></content>";
-	if (xml.includes(marker)) {
-		return xml.replace(marker, `\n${text}\n${marker}`);
+	if (!xml.includes(marker)) {
+		throw new Error("appendBeforeClose: CDATA close marker not found in XML");
 	}
-	// fallback: append to end
-	return `${xml}\n${text}`;
+	return xml.replace(marker, `\n${text}\n${marker}`);
 }
 
 /**
@@ -699,39 +699,13 @@ export const QUESTIONS: CCPQuestion[] = [
 // --- Score extraction ---
 
 export function extractScore(response: string): number | null {
-	const validate = (n: number) => (n >= 0 && n <= 100 ? n : null);
-
-	// Primary: number alone on a line (the ideal response).
+	// Number alone on a line (the ideal response).
 	// Matches "45", "45.", but NOT "1. Some list item" (numbered list).
 	const lineMatch = response.match(/^\s*(\d{1,3})\s*\.?\s*$/m);
 	if (lineMatch?.[1]) {
-		const v = validate(Number.parseInt(lineMatch[1], 10));
-		if (v != null) return v;
+		const n = Number.parseInt(lineMatch[1], 10);
+		if (n >= 0 && n <= 100) return n;
 	}
-
-	// Fallback patterns for when the model wraps the number in prose.
-	// These require explicit contextual keywords so we don't accidentally grab
-	// stray digits from refusal text like "can't" or "100 experts".
-	const fallbackPatterns = [
-		/(?:assign|give|rate|score|set)\s+(?:it\s+)?(?:a\s+)?(?:score\s+of\s+)?(\d{1,3})\b/i,
-		/(?:I(?:'d| would))\s+(?:assign|give|rate|say|put\s+it\s+at|estimate)\s+(?:(?:a\s+)?(?:score\s+of\s+)?)?(\d{1,3})\b/i,
-		/(?:Score|Rating|Number|Value|Estimate|Median)\s*:\s*(\d{1,3})\b/i,
-		/\b(\d{1,3})\s*(?:out of|\/)\s*100\b/i,
-		/(?:rate\s+(?:this|it)\s+(?:at|as)\s+)(\d{1,3})\b/i,
-		/(?:median\s+(?:would|might|score)\s+(?:be|is)\s+(?:around\s+)?(?:approximately\s+)?)(\d{1,3})\b/i,
-		/(?:estimate\s+(?:would be|is|of)\s+(?:around\s+)?(?:approximately\s+)?)(\d{1,3})\b/i,
-		/(?:estimate\s+(?:the\s+)?median\s+(?:at|as|to be)\s+(?:around\s+)?(?:approximately\s+)?)(\d{1,3})\b/i,
-		/(?:around|approximately)\s+(\d{1,3})\s*[.\s]*$/im,
-	];
-
-	for (const pattern of fallbackPatterns) {
-		const match = response.match(pattern);
-		if (match?.[1]) {
-			const v = validate(Number.parseInt(match[1], 10));
-			if (v != null) return v;
-		}
-	}
-
 	return null;
 }
 
@@ -909,6 +883,8 @@ async function main() {
 	if (controlScores.length > 1 && treatmentScores.length > 1) {
 		const d = computeCohensD(controlScores, treatmentScores);
 		console.log(`Cohen's d: ${d.toFixed(3)}`);
+		const perm = pairedPermutationTest(treatmentScores, controlScores);
+		console.log(`Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 	}
 
 	// Per-topic shift table

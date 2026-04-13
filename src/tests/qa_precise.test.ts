@@ -24,21 +24,14 @@ describe("parseGradeResponse", () => {
 		expect(result).toEqual({ correct: true, quality: 3 });
 	});
 
-	test("falls back to regex for malformed JSON", () => {
-		const result = parseGradeResponse(
-			'The answer is "correct": true and "quality": 4 based on my analysis.',
-		);
-		expect(result).toEqual({ correct: true, quality: 4 });
+	test("throws on unparseable input", () => {
+		expect(() => parseGradeResponse("This is completely unparseable garbage.")).toThrow();
 	});
 
-	test("regex fallback handles false correctly", () => {
-		const result = parseGradeResponse('I would say "correct": false and "quality": 2 overall.');
-		expect(result).toEqual({ correct: false, quality: 2 });
-	});
-
-	test("returns defaults when nothing can be parsed", () => {
-		const result = parseGradeResponse("This is completely unparseable garbage.");
-		expect(result).toEqual({ correct: false, quality: 1 });
+	test("throws on malformed JSON without embedded object", () => {
+		expect(() =>
+			parseGradeResponse('The answer is "correct": true and "quality": 4 based on my analysis.'),
+		).toThrow();
 	});
 
 	test("handles JSON with extra fields", () => {

@@ -8,6 +8,7 @@ import {
 	extractFinalAnswer,
 	initLog,
 	matchesAny,
+	pairedPermutationTest,
 	runAgentLoop,
 	WIKI_TOOL,
 	writeTsvResults,
@@ -332,6 +333,12 @@ async function main() {
 	console.log(
 		`  Without tool: ${correctWithout}/${withoutToolRows.length} correct (${((correctWithout / withoutToolRows.length) * 100).toFixed(1)}%)`,
 	);
+
+	const perm = pairedPermutationTest(
+		withToolRows.map((r) => (r[7] === "true" ? 1 : 0)),
+		withoutToolRows.map((r) => (r[7] === "true" ? 1 : 0)),
+	);
+	console.log(`  Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 
 	// Per-question table
 	console.log(`\n  ${"Question".padEnd(65)} ${"With".padEnd(7)} Without`);

@@ -50,34 +50,6 @@ const SYSTEM_PROMPT =
 	"End with ANSWER: followed by your answer.";
 
 // ---------------------------------------------------------------------------
-// Uncertainty detection
-// ---------------------------------------------------------------------------
-
-export const UNCERTAINTY_RE =
-	/i don'?t know|i'?m not sure|my training|as of my|i cannot confirm|cutoff|don'?t have information|not certain|hasn'?t (?:happened|occurred|taken place)|not yet been|has not (?:happened|occurred|taken place)/i;
-
-// ---------------------------------------------------------------------------
-// Specific-answer detection (for hallucination flagging)
-// ---------------------------------------------------------------------------
-
-/** Returns true if the response contains a specific factual claim (name, score, title, etc.) */
-export const SPECIFIC_ANSWER_RE =
-	/(?:won by|winner (?:was|is)|was won by|the (?:winner|champion) (?:is|was)|(?:scored|defeated|beat) .+? \d|(?:title|award|prize) (?:went to|was awarded to|was given to))/i;
-
-// ---------------------------------------------------------------------------
-// Tool-result usefulness check
-// ---------------------------------------------------------------------------
-
-/** Returns true if tool results appear to contain no useful information for the question */
-function toolResultsEmpty(toolCalls: { result: string }[]): boolean {
-	if (toolCalls.length === 0) return false; // no calls means not "tried but failed"
-	return toolCalls.every((tc) => {
-		const r = tc.result;
-		return r.includes("<no_results") || r.includes("<error") || r.trim().length < 50;
-	});
-}
-
-// ---------------------------------------------------------------------------
 // Grading helpers
 // ---------------------------------------------------------------------------
 
@@ -94,15 +66,11 @@ async function gradeAnswered(question: string, answer: string): Promise<boolean>
 	].join("");
 
 	const raw = await gradeWithModel(prompt);
-	try {
-		const parsed = JSON.parse(raw);
-		return parsed.answered === true;
-	} catch {
-		return (
-			raw.toLowerCase().includes('"answered": true') ||
-			raw.toLowerCase().includes('"answered":true')
-		);
+	const parsed = JSON.parse(raw);
+	if (typeof parsed.answered !== "boolean") {
+		throw new Error(`gradeAnswered: expected {answered: boolean}, got: ${raw.slice(0, 200)}`);
 	}
+	return parsed.answered;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +82,6 @@ export interface QuestionResult {
 	mode: "with-tool" | "without-tool";
 	result: AgentResult;
 	answered: boolean;
-	acknowledgedUncertainty: boolean;
-	triedButFailed: boolean;
-	potentiallyHallucinated: boolean;
 	toolQueries: string[];
 }
 
@@ -137,30 +102,17 @@ async function runQuestion(
 	);
 
 	const toolQueries = result.toolCalls.map((tc) => String(tc.input["query"] ?? ""));
-	const acknowledgedUncertainty = UNCERTAINTY_RE.test(result.answer);
-
-	// "Tried but failed": model used the tool but tool returned nothing useful
-	const triedButFailed = result.usedTool && toolResultsEmpty(result.toolCalls);
 
 	let answered = false;
 	if (mode === "with-tool") {
 		answered = await gradeAnswered(question, result.answer);
 	}
 
-	// "Potentially hallucinated": model gives a specific factual answer WITHOUT
-	// using the tool for a post-cutoff question. This is suspicious because the
-	// model should not know these answers from training data alone.
-	const potentiallyHallucinated =
-		!result.usedTool && !acknowledgedUncertainty && SPECIFIC_ANSWER_RE.test(result.answer);
-
 	return {
 		question,
 		mode,
 		result,
 		answered,
-		acknowledgedUncertainty,
-		triedButFailed,
-		potentiallyHallucinated,
 		toolQueries,
 	};
 }
@@ -196,7 +148,7 @@ async function main() {
 		console.log("  mode: with-tool ...");
 		const withTool = await runQuestion(q, "with-tool", log);
 		console.log(
-			`    used_tool=${withTool.result.usedTool}  answered=${withTool.answered}  tried_but_failed=${withTool.triedButFailed}  turns=${withTool.result.turns}`,
+			`    used_tool=${withTool.result.usedTool}  answered=${withTool.answered}  turns=${withTool.result.turns}`,
 		);
 		if (withTool.toolQueries.length > 0) {
 			console.log(`    queries: ${withTool.toolQueries.join("; ")}`);
@@ -207,9 +159,7 @@ async function main() {
 		// Without tool
 		console.log("  mode: without-tool ...");
 		const withoutTool = await runQuestion(q, "without-tool", log);
-		console.log(
-			`    uncertainty=${withoutTool.acknowledgedUncertainty}  hallucinated=${withoutTool.potentiallyHallucinated}  turns=${withoutTool.result.turns}`,
-		);
+		console.log(`    turns=${withoutTool.result.turns}`);
 		console.log(`    answer: ${withoutTool.result.answer.slice(0, 200)}`);
 		allResults.push(withoutTool);
 
@@ -224,9 +174,6 @@ async function main() {
 		"tool_queries",
 		"model_answer",
 		"answered",
-		"acknowledged_uncertainty",
-		"tried_but_failed",
-		"potentially_hallucinated",
 		"turns",
 		"input_tokens",
 		"output_tokens",
@@ -239,9 +186,6 @@ async function main() {
 		r.toolQueries.join("; "),
 		r.result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
 		String(r.answered),
-		String(r.acknowledgedUncertainty),
-		String(r.triedButFailed),
-		String(r.potentiallyHallucinated),
 		String(r.result.turns),
 		String(r.result.inputTokens),
 		String(r.result.outputTokens),
@@ -251,22 +195,11 @@ async function main() {
 
 	// ---- Summary ----
 	const withToolResults = allResults.filter((r) => r.mode === "with-tool");
-	const withoutToolResults = allResults.filter((r) => r.mode === "without-tool");
 
 	const usedToolPct =
 		(withToolResults.filter((r) => r.result.usedTool).length / withToolResults.length) * 100;
 	const answeredPct =
 		(withToolResults.filter((r) => r.answered).length / withToolResults.length) * 100;
-	const triedButFailedPct =
-		(withToolResults.filter((r) => r.triedButFailed).length / withToolResults.length) * 100;
-	const uncertaintyPct =
-		(withoutToolResults.filter((r) => r.acknowledgedUncertainty).length /
-			withoutToolResults.length) *
-		100;
-	const hallucinatedPct =
-		(withoutToolResults.filter((r) => r.potentiallyHallucinated).length /
-			withoutToolResults.length) *
-		100;
 
 	const totalInput = allResults.reduce((s, r) => s + r.result.inputTokens, 0);
 	const totalOutput = allResults.reduce((s, r) => s + r.result.outputTokens, 0);
@@ -276,20 +209,12 @@ async function main() {
 	console.log("=".repeat(60));
 	console.log(`  Used tool (with-tool):                ${usedToolPct.toFixed(1)}%`);
 	console.log(`  Answered (with-tool):                 ${answeredPct.toFixed(1)}%`);
-	console.log(`  Tried but failed (with-tool):         ${triedButFailedPct.toFixed(1)}%`);
-	console.log(`  Acknowledged uncertainty (no-tool):    ${uncertaintyPct.toFixed(1)}%`);
-	console.log(`  Potentially hallucinated (no-tool):    ${hallucinatedPct.toFixed(1)}%`);
 	console.log(`  Total input tokens:                   ${totalInput}`);
 	console.log(`  Total output tokens:                  ${totalOutput}`);
 	console.log(`  Total tokens:                         ${totalInput + totalOutput}`);
 
 	if (usedToolPct < 80) {
 		console.log("\n  WARNING: tool usage below 80% threshold");
-	}
-	if (hallucinatedPct > 20) {
-		console.log(
-			"\n  WARNING: hallucination rate above 20% — model is fabricating post-cutoff facts",
-		);
 	}
 }
 

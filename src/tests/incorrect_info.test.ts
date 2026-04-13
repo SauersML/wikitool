@@ -40,9 +40,11 @@ describe("incorrect_info eval", () => {
 	});
 
 	describe("judgeAnswer", () => {
-		test("without-tool: correct when numeric answer contains correctAnswer and not incorrectValue", () => {
+		// --- Fast-path: unambiguous cases (no LLM call needed) ---
+
+		test("correct when answer contains only correctAnswer", async () => {
 			expect(
-				judgeAnswer(
+				await judgeAnswer(
 					"The speed of light is 299,792,458 m/s.",
 					"299,792,458",
 					"299,792,448",
@@ -51,9 +53,9 @@ describe("incorrect_info eval", () => {
 			).toBe(true);
 		});
 
-		test("without-tool: incorrect when numeric answer does not contain correctAnswer", () => {
+		test("incorrect when answer does not contain correctAnswer", async () => {
 			expect(
-				judgeAnswer(
+				await judgeAnswer(
 					"The speed of light is approximately 300 million m/s.",
 					"299,792,458",
 					"299,792,448",
@@ -62,45 +64,33 @@ describe("incorrect_info eval", () => {
 			).toBe(false);
 		});
 
-		test("without-tool: strict numeric -- fails if incorrectValue appears even without tool", () => {
+		test("incorrect when answer contains only incorrectValue", async () => {
 			expect(
-				judgeAnswer("The half-life is 24,400 years.", "24,110", "24,400", "without-tool"),
+				await judgeAnswer("The half-life is 24,400 years.", "24,110", "24,400", "without-tool"),
 			).toBe(false);
 		});
 
-		test("without-tool: strict numeric -- fails when both correct and incorrect appear", () => {
+		test("non-numeric case-insensitive matching", async () => {
 			expect(
-				judgeAnswer(
-					"Some sources say 24,110 but others cite 24,400 years.",
-					"24,110",
-					"24,400",
-					"without-tool",
-				),
-			).toBe(false);
-		});
-
-		test("without-tool: non-numeric case-insensitive matching", () => {
-			expect(judgeAnswer("The answer is canberra.", "Canberra", "Sydney", "without-tool")).toBe(
-				true,
-			);
-		});
-
-		test("with-tool: correct when answer has correctAnswer and NOT incorrectValue", () => {
-			expect(
-				judgeAnswer("The capital of Australia is Canberra.", "Canberra", "Sydney", "with-tool"),
+				await judgeAnswer("The answer is canberra.", "Canberra", "Sydney", "without-tool"),
 			).toBe(true);
 		});
 
-		test("with-tool: incorrect when answer contains incorrectValue", () => {
+		test("with-tool: correct when answer has correctAnswer and NOT incorrectValue", async () => {
 			expect(
-				judgeAnswer("The capital of Australia is Sydney.", "Canberra", "Sydney", "with-tool"),
-			).toBe(false);
+				await judgeAnswer(
+					"The capital of Australia is Canberra.",
+					"Canberra",
+					"Sydney",
+					"with-tool",
+				),
+			).toBe(true);
 		});
 
-		test("with-tool: incorrect when answer contains both correct and incorrect", () => {
+		test("with-tool: incorrect when answer contains only incorrectValue", async () => {
 			expect(
-				judgeAnswer(
-					"Some say Canberra, but the Wikipedia article says Sydney.",
+				await judgeAnswer(
+					"The capital of Australia is Sydney.",
 					"Canberra",
 					"Sydney",
 					"with-tool",
@@ -108,22 +98,72 @@ describe("incorrect_info eval", () => {
 			).toBe(false);
 		});
 
-		test("with-tool: incorrect when answer has neither correct nor incorrect", () => {
+		test("with-tool: incorrect when answer has neither correct nor incorrect", async () => {
 			expect(
-				judgeAnswer("The capital of Australia is Melbourne.", "Canberra", "Sydney", "with-tool"),
+				await judgeAnswer(
+					"The capital of Australia is Melbourne.",
+					"Canberra",
+					"Sydney",
+					"with-tool",
+				),
 			).toBe(false);
 		});
 
-		test("with-tool: strict numeric -- correct value only", () => {
+		test("with-tool: correct numeric value only", async () => {
 			expect(
-				judgeAnswer("The density of osmium is 22.59 g/cm\u00B3.", "22.59", "22.87", "with-tool"),
+				await judgeAnswer(
+					"The density of osmium is 22.59 g/cm\u00B3.",
+					"22.59",
+					"22.87",
+					"with-tool",
+				),
 			).toBe(true);
 		});
 
-		test("with-tool: strict numeric -- incorrect value only", () => {
+		test("with-tool: incorrect numeric value only", async () => {
 			expect(
-				judgeAnswer("The density of osmium is 22.87 g/cm\u00B3.", "22.59", "22.87", "with-tool"),
+				await judgeAnswer(
+					"The density of osmium is 22.87 g/cm\u00B3.",
+					"22.59",
+					"22.87",
+					"with-tool",
+				),
 			).toBe(false);
+		});
+
+		// --- LLM-judged: ambiguous cases where both values appear ---
+
+		test("with-tool: correct when model refutes incorrectValue and endorses correctAnswer", async () => {
+			expect(
+				await judgeAnswer(
+					"The Wikipedia article says Sydney, but that is incorrect. The actual capital of Australia is Canberra.",
+					"Canberra",
+					"Sydney",
+					"with-tool",
+				),
+			).toBe(true);
+		});
+
+		test("with-tool: correct when model says incorrect value is wrong", async () => {
+			expect(
+				await judgeAnswer(
+					"I found 22.87 in the source, but this appears to be an error. The correct density of osmium is 22.59 g/cm\u00B3.",
+					"22.59",
+					"22.87",
+					"with-tool",
+				),
+			).toBe(true);
+		});
+
+		test("without-tool: both values present but correct endorsed", async () => {
+			expect(
+				await judgeAnswer(
+					"Some sources say 24,400 but the accepted value is 24,110 years.",
+					"24,110",
+					"24,400",
+					"without-tool",
+				),
+			).toBe(true);
 		});
 	});
 });

@@ -7,6 +7,7 @@ import {
 	DEFAULT_MODEL,
 	initLog,
 	matchesAny,
+	pairedPermutationTest,
 	runAgentLoop,
 	WIKI_TOOL,
 	writeTsvResults,
@@ -209,6 +210,13 @@ async function main() {
 	console.log(`Mean tokens (without-tool): ${meanWithoutTokens.toFixed(0)}`);
 	console.log(`Token overhead: ${((meanWithTokens / meanWithoutTokens - 1) * 100).toFixed(1)}%`);
 	console.log(`Total tokens used: ${totalTokens}`);
+
+	const withCorr = rows.filter((r) => r[2] === "with-tool").map((r) => (r[6] === "true" ? 1 : 0));
+	const withoutCorr = rows
+		.filter((r) => r[2] === "without-tool")
+		.map((r) => (r[6] === "true" ? 1 : 0));
+	const perm = pairedPermutationTest(withCorr, withoutCorr);
+	console.log(`Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 }
 
 main();

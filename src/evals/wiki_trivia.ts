@@ -6,11 +6,11 @@
 
 import {
 	DEFAULT_MODEL,
-	WIKI_TOOL,
 	defaultToolHandler,
 	initLog,
 	matchesAny,
 	runAgentLoop,
+	WIKI_TOOL,
 	writeTsvResults,
 } from "./utils";
 
@@ -45,7 +45,8 @@ export const QUESTIONS: TriviaQuestion[] = [
 		datasetIndex: 5,
 	},
 	{
-		question: "Which actor voiced the character Rooster, the Welsh Sheepdog, in The Secret Life of Pets 2?",
+		question:
+			"Which actor voiced the character Rooster, the Welsh Sheepdog, in The Secret Life of Pets 2?",
 		answer: "Harrison Ford",
 		acceptableAnswers: ["Harrison Ford"],
 		topic: "Film",
@@ -82,21 +83,24 @@ export const QUESTIONS: TriviaQuestion[] = [
 		datasetIndex: 24,
 	},
 	{
-		question: "Which Russian composer was a member of the group known as The Five and is famous for the orchestral suite Scheherazade?",
+		question:
+			"Which Russian composer was a member of the group known as The Five and is famous for the orchestral suite Scheherazade?",
 		answer: "Nikolai Rimsky-Korsakov",
 		acceptableAnswers: ["Rimsky-Korsakov", "Nikolai Rimsky-Korsakov"],
 		topic: "Music",
 		datasetIndex: 42,
 	},
 	{
-		question: "Which treaty in 1689 was the first formal agreement between China and a European power?",
+		question:
+			"Which treaty in 1689 was the first formal agreement between China and a European power?",
 		answer: "Treaty of Nerchinsk",
 		acceptableAnswers: ["Treaty of Nerchinsk", "Nerchinsk"],
 		topic: "History",
 		datasetIndex: 507,
 	},
 	{
-		question: "Which explorer's expedition first fully explored the Atlantic coast of Patagonia in 1520?",
+		question:
+			"Which explorer's expedition first fully explored the Atlantic coast of Patagonia in 1520?",
 		answer: "Ferdinand Magellan",
 		acceptableAnswers: ["Ferdinand Magellan", "Magellan", "Fernão de Magalhães"],
 		topic: "Exploration",
@@ -119,7 +123,13 @@ export const QUESTIONS: TriviaQuestion[] = [
 	{
 		question: "Which astronomer first formally described the Andromeda Galaxy around the year 964?",
 		answer: "al-Rahman al-Sufi",
-		acceptableAnswers: ["al-Sufi", "Abd al-Rahman al-Sufi", "al-Rahman al-Sufi", "Al Sufi", "Abd al-Rahman"],
+		acceptableAnswers: [
+			"al-Sufi",
+			"Abd al-Rahman al-Sufi",
+			"al-Rahman al-Sufi",
+			"Al Sufi",
+			"Abd al-Rahman",
+		],
 		topic: "Astronomy",
 		datasetIndex: 520,
 	},
@@ -156,26 +166,34 @@ export const QUESTIONS: TriviaQuestion[] = [
 	{
 		question: "What is the Hexagrammum Mysticum an example of in Blaise Pascal's 1639 work?",
 		answer: "Hexagrammum Mysticum",
-		acceptableAnswers: ["Hexagrammum Mysticum", "hexagrammum mysticum", "mystic hexagram", "Pascal's theorem"],
+		acceptableAnswers: [
+			"Hexagrammum Mysticum",
+			"hexagrammum mysticum",
+			"mystic hexagram",
+			"Pascal's theorem",
+		],
 		topic: "Mathematics",
 		datasetIndex: 48,
 	},
 	{
-		question: "Which mathematician first introduced the idea of a worldwide system of time zones in 1858?",
+		question:
+			"Which mathematician first introduced the idea of a worldwide system of time zones in 1858?",
 		answer: "Quirico Filopanti",
 		acceptableAnswers: ["Quirico Filopanti", "Filopanti", "Giuseppe Barilli"],
 		topic: "Science/History",
 		datasetIndex: 1520,
 	},
 	{
-		question: "Which historian and ethnologist conducted investigations of the Utsuro-bune story in 1925?",
+		question:
+			"Which historian and ethnologist conducted investigations of the Utsuro-bune story in 1925?",
 		answer: "Yanagita Kunio",
 		acceptableAnswers: ["Yanagita Kunio", "Yanagita", "Kunio Yanagita"],
 		topic: "Japanese History",
 		datasetIndex: 1050,
 	},
 	{
-		question: "What is the name of the radioactive green glass formed from the desert sand melted by the Trinity nuclear test?",
+		question:
+			"What is the name of the radioactive green glass formed from the desert sand melted by the Trinity nuclear test?",
 		answer: "Trinitite",
 		acceptableAnswers: ["Trinitite"],
 		topic: "Science",
@@ -184,33 +202,40 @@ export const QUESTIONS: TriviaQuestion[] = [
 	{
 		question: "Which act formally dissolved the East India Company in 1874?",
 		answer: "India Stock Dividend Redemption Act 1873",
-		acceptableAnswers: ["India Stock Dividend Redemption Act", "East India Stock Dividend Redemption Act"],
+		acceptableAnswers: [
+			"India Stock Dividend Redemption Act",
+			"East India Stock Dividend Redemption Act",
+		],
 		topic: "History",
 		datasetIndex: 1006,
 	},
 	{
-		question: "What was the codename used for the PlayStation Vita before its official announcement?",
+		question:
+			"What was the codename used for the PlayStation Vita before its official announcement?",
 		answer: "Next Generation Portable",
 		acceptableAnswers: ["Next Generation Portable", "NGP"],
 		topic: "Technology",
 		datasetIndex: 44,
 	},
 	{
-		question: "Which German general was appointed commander of the Berlin Defence Area on 23 April 1945?",
+		question:
+			"Which German general was appointed commander of the Berlin Defence Area on 23 April 1945?",
 		answer: "Helmuth Weidling",
 		acceptableAnswers: ["Helmuth Weidling", "Weidling"],
 		topic: "Military History",
 		datasetIndex: 514,
 	},
 	{
-		question: "Which scientist experimentally verified Einstein's explanation of Brownian motion in 1908?",
+		question:
+			"Which scientist experimentally verified Einstein's explanation of Brownian motion in 1908?",
 		answer: "Jean Baptiste Perrin",
 		acceptableAnswers: ["Jean Baptiste Perrin", "Perrin", "Jean Perrin"],
 		topic: "Physics",
 		datasetIndex: 2029,
 	},
 	{
-		question: "What was the name of the yacht that Fidel Castro and his followers used to invade Cuba in 1956?",
+		question:
+			"What was the name of the yacht that Fidel Castro and his followers used to invade Cuba in 1956?",
 		answer: "Granma",
 		acceptableAnswers: ["Granma"],
 		topic: "History",
@@ -233,7 +258,6 @@ async function runQuestion(
 	log: (entry: unknown) => Promise<void>,
 ) {
 	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-	const toolHandler = mode === "with-tool" ? defaultToolHandler : undefined;
 
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
@@ -242,13 +266,13 @@ async function runQuestion(
 			system: SYSTEM_PROMPT,
 			userMessage: q.question,
 			tools,
-			toolHandler,
+			...(mode === "with-tool" ? { toolHandler: defaultToolHandler } : {}),
 		},
 		log,
 	);
 
 	const isCorrect = judge(q, result.answer);
-	const toolQueries = result.toolCalls.map((tc) => tc.input.query ?? "").join("; ");
+	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
 
 	console.log(
 		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
@@ -345,7 +369,7 @@ async function main() {
 	// Per-question table
 	console.log(`\n  ${"Question".padEnd(65)} ${"Topic".padEnd(18)} ${"With".padEnd(7)} Without`);
 	console.log(`  ${"─".repeat(65)} ${"─".repeat(18)} ${"─".repeat(7)} ${"─".repeat(7)}`);
-	for (const { q, i } of questionsToRun) {
+	for (const { q } of questionsToRun) {
 		const wt = withToolRows.find((r) => r[0] === q.question);
 		const wo = withoutToolRows.find((r) => r[0] === q.question);
 		const short = q.question.slice(0, 63).padEnd(65);

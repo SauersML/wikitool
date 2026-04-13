@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { QUERY_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME } from "./tool/prompt";
-import { type SeenPages, createSeenPages, searchWikipedia } from "./tool/search";
+import { createSeenPages, type SeenPages, searchWikipedia } from "./tool/search";
 
 export class WikiSearchMCP extends McpAgent {
 	server = new McpServer({

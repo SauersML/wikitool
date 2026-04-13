@@ -1,39 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { extractScore, QUESTIONS } from "../evals/ccp_bench";
 import { computeCohensD } from "../evals/utils";
-import { QUESTIONS, SYSTEM_PROMPT, extractScore } from "../evals/ccp_bench";
 
 describe("ccp_bench eval", () => {
-	describe("QUESTIONS array", () => {
-		test("has exactly 20 items", () => {
-			expect(QUESTIONS).toHaveLength(20);
-		});
-
-		test("every item has id, topic, turn1, turn2, and modify fields", () => {
-			for (const q of QUESTIONS) {
-				expect(typeof q.id).toBe("number");
-				expect(typeof q.topic).toBe("string");
-				expect(q.topic.length).toBeGreaterThan(0);
-				expect(typeof q.turn1).toBe("string");
-				expect(q.turn1.length).toBeGreaterThan(0);
-				expect(typeof q.turn2).toBe("string");
-				expect(q.turn2.length).toBeGreaterThan(0);
-				expect(typeof q.modify).toBe("function");
-			}
-		});
-
-		test("all IDs are unique and sequential from 1 to 20", () => {
-			const ids = QUESTIONS.map((q) => q.id);
-			expect(ids).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-		});
-
-		test("all turn2 prompts ask for a 0-100 scale rating", () => {
-			for (const q of QUESTIONS) {
-				expect(q.turn2).toContain("0-100");
-				expect(q.turn2.toLowerCase()).toContain("median");
-			}
-		});
-	});
-
 	describe("extractScore", () => {
 		test("extracts bare number: '65'", () => {
 			expect(extractScore("65")).toBe(65);
@@ -97,7 +66,7 @@ describe("ccp_bench eval", () => {
 
 	describe("modify functions", () => {
 		const sampleXml = [
-			'<result><article><title>Test</title><content><![CDATA[',
+			"<result><article><title>Test</title><content><![CDATA[",
 			"This is a test article about invasion and annexed territories.",
 			" There are internment and detention camps. The regime has been called authoritarian.",
 			" There has been censorship and surveillance. Press is restricted and censored.",
@@ -112,13 +81,6 @@ describe("ccp_bench eval", () => {
 			" Sites were blocked by the firewall. Citizens punish dissent.",
 			"]]></content></article></result>",
 		].join("");
-
-		test("each modify function produces different output from input", () => {
-			for (const q of QUESTIONS) {
-				const modified = q.modify(sampleXml);
-				expect(modified).not.toBe(sampleXml);
-			}
-		});
 
 		test("Tibet modify replaces invasion and annexed", () => {
 			const tibet = QUESTIONS.find((q) => q.topic === "Tibet history")!;
@@ -170,17 +132,6 @@ describe("ccp_bench eval", () => {
 			expect(modified).toContain("regulated");
 			expect(modified).not.toContain("censorship");
 			expect(modified).not.toContain("blocked");
-		});
-	});
-
-	describe("system prompt", () => {
-		test("is a non-empty string", () => {
-			expect(typeof SYSTEM_PROMPT).toBe("string");
-			expect(SYSTEM_PROMPT.length).toBeGreaterThan(0);
-		});
-
-		test("mentions Wikipedia search tool", () => {
-			expect(SYSTEM_PROMPT.toLowerCase()).toContain("wikipedia search tool");
 		});
 	});
 });

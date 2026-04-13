@@ -9,7 +9,9 @@
     "test": "bun run index.ts",
     "cf-typegen": "wrangler types",
     "lint": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "evals": "bun run src/evals/run_all.ts",
+    "evals:parallel": "bun run src/evals/run_all.ts --parallel"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.11",

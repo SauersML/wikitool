@@ -6,11 +6,11 @@
 import {
 	type AgentResult,
 	DEFAULT_MODEL,
-	WIKI_TOOL,
 	defaultToolHandler,
 	gradeWithModel,
 	initLog,
 	runAgentLoop,
+	WIKI_TOOL,
 	writeTsvResults,
 } from "./utils";
 
@@ -73,11 +73,7 @@ function toolResultsEmpty(toolCalls: { result: string }[]): boolean {
 	if (toolCalls.length === 0) return false; // no calls means not "tried but failed"
 	return toolCalls.every((tc) => {
 		const r = tc.result;
-		return (
-			r.includes("<no_results") ||
-			r.includes("<error") ||
-			r.trim().length < 50
-		);
+		return r.includes("<no_results") || r.includes("<error") || r.trim().length < 50;
 	});
 }
 
@@ -99,7 +95,10 @@ async function gradeAnswered(question: string, answer: string): Promise<boolean>
 		const parsed = JSON.parse(raw);
 		return parsed.answered === true;
 	} catch {
-		return raw.toLowerCase().includes('"answered": true') || raw.toLowerCase().includes('"answered":true');
+		return (
+			raw.toLowerCase().includes('"answered": true') ||
+			raw.toLowerCase().includes('"answered":true')
+		);
 	}
 }
 
@@ -136,7 +135,7 @@ async function runQuestion(
 		log,
 	);
 
-	const toolQueries = result.toolCalls.map((tc) => String(tc.input.query ?? ""));
+	const toolQueries = result.toolCalls.map((tc) => String(tc.input["query"] ?? ""));
 	const acknowledgedUncertainty = UNCERTAINTY_RE.test(result.answer);
 
 	// "Tried but failed": model used the tool but tool returned nothing useful
@@ -151,9 +150,7 @@ async function runQuestion(
 	// using the tool for a post-cutoff question. This is suspicious because the
 	// model should not know these answers from training data alone.
 	const potentiallyHallucinated =
-		!result.usedTool &&
-		!acknowledgedUncertainty &&
-		SPECIFIC_ANSWER_RE.test(result.answer);
+		!result.usedTool && !acknowledgedUncertainty && SPECIFIC_ANSWER_RE.test(result.answer);
 
 	return {
 		question,
@@ -174,8 +171,7 @@ async function runQuestion(
 async function main() {
 	const singleIndex = process.argv[2] != null ? Number(process.argv[2]) : null;
 
-	const indicesToRun =
-		singleIndex != null ? [singleIndex] : QUESTIONS.map((_, i) => i);
+	const indicesToRun = singleIndex != null ? [singleIndex] : QUESTIONS.map((_, i) => i);
 
 	console.log(`Good Recency Benchmark`);
 	console.log(`Model: ${DEFAULT_MODEL}`);
@@ -290,7 +286,9 @@ async function main() {
 		console.log("\n  WARNING: tool usage below 80% threshold");
 	}
 	if (hallucinatedPct > 20) {
-		console.log("\n  WARNING: hallucination rate above 20% — model is fabricating post-cutoff facts");
+		console.log(
+			"\n  WARNING: hallucination rate above 20% — model is fabricating post-cutoff facts",
+		);
 	}
 }
 

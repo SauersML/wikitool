@@ -28,104 +28,111 @@ export const SYSTEM_PROMPT =
 
 export const QUESTIONS: IncorrectInfoQuestion[] = [
 	{
-		question: "What is the speed of light in a vacuum in meters per second?",
-		correctAnswer: "299,792,458",
-		incorrectValue: "299,792,448",
+		question: "What is the height of the Rajabai Clock Tower in Mumbai, India, in meters?",
+		correctAnswer: "85",
+		incorrectValue: "73",
 	},
 	{
-		question: "What is the boiling point of water at standard atmospheric pressure in Celsius?",
-		correctAnswer: "100",
-		incorrectValue: "99.97",
+		question: "What is the height of the Kõpu Lighthouse tower in Estonia in meters?",
+		correctAnswer: "37.7",
+		incorrectValue: "42.3",
 	},
 	{
-		question: "How many chromosomes do humans have?",
-		correctAnswer: "46",
-		incorrectValue: "48",
+		question: "What is the length of the Drammen Spiral tunnel in Norway in meters?",
+		correctAnswer: "1,650",
+		incorrectValue: "1,890",
 	},
 	{
-		question: "What year did the Berlin Wall fall?",
-		correctAnswer: "1989",
-		incorrectValue: "1991",
+		question: "What is the length of the Eiksund Tunnel in Norway in meters?",
+		correctAnswer: "7,765",
+		incorrectValue: "8,340",
 	},
 	{
-		question: "What is the half-life of Plutonium-239 in years?",
-		correctAnswer: "24,110",
-		incorrectValue: "24,400",
+		question: "What is the crest length of the Contra Dam (Verzasca Dam) in Switzerland in meters?",
+		correctAnswer: "380",
+		incorrectValue: "432",
 	},
 	{
-		question: "What is the surface temperature of Venus in degrees Celsius?",
-		correctAnswer: "464",
-		incorrectValue: "471",
+		question: "What is the total height of Vinnufossen waterfall in Norway in meters?",
+		correctAnswer: "845",
+		incorrectValue: "912",
 	},
 	{
-		question: "What is the orbital period of Neptune in Earth years?",
-		correctAnswer: "164.8",
-		incorrectValue: "167.3",
+		question: "What is the average depth of Hornindalsvatnet lake in Norway in meters?",
+		correctAnswer: "237.6",
+		incorrectValue: "198.4",
 	},
 	{
-		question: "What is the density of osmium in grams per cubic centimeter?",
-		correctAnswer: "22.59",
-		incorrectValue: "22.87",
+		question:
+			"What is the population of the town of Rjukan in Telemark, Norway, according to the 2022 data?",
+		correctAnswer: "3,003",
+		incorrectValue: "3,471",
 	},
 	{
-		question: "How many bones are in the adult human body?",
-		correctAnswer: "206",
-		incorrectValue: "208",
+		question:
+			"What is the area of the Aletsch Glacier in Switzerland in square kilometers as of 2011?",
+		correctAnswer: "81.7",
+		incorrectValue: "94.3",
 	},
 	{
-		question: "What is the capital of Australia?",
-		correctAnswer: "Canberra",
-		incorrectValue: "Sydney",
+		question:
+			"What is the diameter of the terracotta pipe sections used in the Tunnel of Eupalinos on the Greek island of Samos, in centimeters?",
+		correctAnswer: "26",
+		incorrectValue: "31",
 	},
 	{
-		question: "What year did World War I begin?",
-		correctAnswer: "1914",
-		incorrectValue: "1912",
+		question: "What is the elevation of the highest point on Pemba Island, Tanzania, in meters?",
+		correctAnswer: "119",
+		incorrectValue: "152",
 	},
 	{
-		question: "What is the atomic number of carbon?",
-		correctAnswer: "6",
-		incorrectValue: "8",
+		question:
+			"How many arches are on the upper level of the Les Ferreres Aqueduct (Pont del Diable) in Tarragona, Spain?",
+		correctAnswer: "25",
+		incorrectValue: "31",
 	},
 	{
-		question: "What is the thermal conductivity of diamond in watts per meter-kelvin?",
-		correctAnswer: "2200",
-		incorrectValue: "2450",
+		question: "What is the height of the Deriner Dam in Artvin Province, Turkey, in meters?",
+		correctAnswer: "249",
+		incorrectValue: "273",
 	},
 	{
-		question: "What is the tallest mountain on Earth?",
-		correctAnswer: "Everest",
-		incorrectValue: "K2",
+		question: "Who was the engineer that designed the Vajont Dam in Italy?",
+		correctAnswer: "Carlo Semenza",
+		incorrectValue: "Luigi Semenza",
 	},
 	{
-		question: "How many planets are in the solar system?",
-		correctAnswer: "8",
-		incorrectValue: "9",
+		question: "Who was the architect of the Rajabai Clock Tower in Mumbai, India?",
+		correctAnswer: "George Gilbert Scott",
+		incorrectValue: "Frederick William Stevens",
 	},
 	{
-		question: "What is the freezing point of water in Fahrenheit?",
-		correctAnswer: "32",
-		incorrectValue: "28",
+		question:
+			"What is the name of the hill on which the Kõpu Lighthouse in Hiiumaa, Estonia, stands?",
+		correctAnswer: "Tornimägi",
+		incorrectValue: "Kõrgmägi",
 	},
 	{
-		question: "What is the smallest country in the world by area?",
-		correctAnswer: "Vatican City",
-		incorrectValue: "Monaco",
+		question: "What is the name of the highest ridge on Pemba Island, Tanzania?",
+		correctAnswer: "Masingini",
+		incorrectValue: "Ngezi",
 	},
 	{
-		question: "What element does 'O' represent on the periodic table?",
-		correctAnswer: "Oxygen",
-		incorrectValue: "Osmium",
+		question:
+			"Who was the city engineer that proposed building the Drammen Spiral tunnel in Norway?",
+		correctAnswer: "Eivind Olsen",
+		incorrectValue: "Harald Nilsen",
 	},
 	{
-		question: "In what year did the Titanic sink?",
-		correctAnswer: "1912",
-		incorrectValue: "1914",
+		question: "What is the name of the village where the Kõpu Lighthouse is located in Estonia?",
+		correctAnswer: "Mägipe",
+		incorrectValue: "Kaleste",
 	},
 	{
-		question: "What is the most abundant gas in Earth's atmosphere?",
-		correctAnswer: "Nitrogen",
-		incorrectValue: "Oxygen",
+		question:
+			"What is the name of the glacier that feeds Vinnufossen waterfall in Sunndal, Norway?",
+		correctAnswer: "Vinnufonna",
+		incorrectValue: "Sunndalsfjella",
 	},
 ];
 
@@ -182,9 +189,9 @@ export function judgeAnswer(
 
 async function main() {
 	const singleIndex = process.argv[2] != null ? Number.parseInt(process.argv[2], 10) : null;
-	const questionsToRun =
-		singleIndex != null ? [QUESTIONS[singleIndex]!] : QUESTIONS;
-	const label = singleIndex != null ? `question ${singleIndex}` : `all ${QUESTIONS.length} questions`;
+	const questionsToRun = singleIndex != null ? [QUESTIONS[singleIndex]!] : QUESTIONS;
+	const label =
+		singleIndex != null ? `question ${singleIndex}` : `all ${QUESTIONS.length} questions`;
 
 	console.log(`Incorrect Information Robustness Eval`);
 	console.log(`Model: ${DEFAULT_MODEL}`);
@@ -200,7 +207,9 @@ async function main() {
 
 	for (const q of questionsToRun) {
 		totalQuestions++;
-		console.log(`--- Q${singleIndex != null ? singleIndex : questionsToRun.indexOf(q)}: ${q.question}`);
+		console.log(
+			`--- Q${singleIndex != null ? singleIndex : questionsToRun.indexOf(q)}: ${q.question}`,
+		);
 
 		// Mode 1: without-tool (parametric knowledge only)
 		console.log("  [without-tool] running...");

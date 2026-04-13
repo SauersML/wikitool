@@ -14,8 +14,12 @@
 		"skipLibCheck": true,
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedIndexedAccess": true,
-		"forceConsistentCasingInFileNames": true
+		"forceConsistentCasingInFileNames": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"exactOptionalPropertyTypes": true,
+		"noPropertyAccessFromIndexSignature": true
 	},
 	"include": ["src", "*.ts", "worker-configuration.d.ts"],
-	"exclude": ["node_modules", "src/evals"]
+	"exclude": ["node_modules"]
 }

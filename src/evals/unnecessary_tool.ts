@@ -5,10 +5,10 @@
 import {
 	type AgentResult,
 	DEFAULT_MODEL,
-	WIKI_TOOL,
 	initLog,
 	matchesAny,
 	runAgentLoop,
+	WIKI_TOOL,
 	writeTsvResults,
 } from "./utils";
 
@@ -73,14 +73,10 @@ export const QUESTIONS: UnnecessaryToolQuestion[] = [
 // --- Main ---
 
 async function main() {
-	const singleIndex =
-		process.argv[2] != null ? Number.parseInt(process.argv[2], 10) : null;
-	const questionsToRun =
-		singleIndex != null ? [QUESTIONS[singleIndex]!] : QUESTIONS;
+	const singleIndex = process.argv[2] != null ? Number.parseInt(process.argv[2], 10) : null;
+	const questionsToRun = singleIndex != null ? [QUESTIONS[singleIndex]!] : QUESTIONS;
 	const label =
-		singleIndex != null
-			? `question ${singleIndex}`
-			: `all ${QUESTIONS.length} questions`;
+		singleIndex != null ? `question ${singleIndex}` : `all ${QUESTIONS.length} questions`;
 
 	console.log("Unnecessary Tool Use Eval");
 	console.log(`Model: ${DEFAULT_MODEL}`);
@@ -100,8 +96,7 @@ async function main() {
 
 	for (const q of questionsToRun) {
 		totalQuestions++;
-		const idx =
-			singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
+		const idx = singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
 		console.log(`--- Q${idx}: ${q.question}`);
 		console.log(`    expected: ${q.acceptableAnswers.join(", ")}`);
 
@@ -117,7 +112,7 @@ async function main() {
 		);
 
 		const toolQueries = withResult.toolCalls
-			.map((tc) => (tc.input.query as string) ?? "")
+			.map((tc) => (tc.input["query"] as string) ?? "")
 			.join("; ");
 		const withCorrect = matchesAny(withResult.answer, q.acceptableAnswers);
 
@@ -155,19 +150,13 @@ async function main() {
 			log,
 		);
 
-		const withoutCorrect = matchesAny(
-			withoutResult.answer,
-			q.acceptableAnswers,
-		);
+		const withoutCorrect = matchesAny(withoutResult.answer, q.acceptableAnswers);
 		if (withoutCorrect) withoutToolCorrect++;
-		const withoutTotalTokens =
-			withoutResult.inputTokens + withoutResult.outputTokens;
+		const withoutTotalTokens = withoutResult.inputTokens + withoutResult.outputTokens;
 		withoutToolTokens.push(withoutTotalTokens);
 		totalTokens += withoutTotalTokens;
 
-		console.log(
-			`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`,
-		);
+		console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
 		console.log(`  [without-tool] correct: ${withoutCorrect}`);
 		console.log();
 
@@ -203,37 +192,22 @@ async function main() {
 	// Summary
 	const pctUsedTool = ((withToolUsedCount / totalQuestions) * 100).toFixed(1);
 	const pctCorrectWith = ((withToolCorrect / totalQuestions) * 100).toFixed(1);
-	const pctCorrectWithout = (
-		(withoutToolCorrect / totalQuestions) *
-		100
-	).toFixed(1);
+	const pctCorrectWithout = ((withoutToolCorrect / totalQuestions) * 100).toFixed(1);
 
-	const meanWithTokens =
-		withToolTokens.reduce((a, b) => a + b, 0) / withToolTokens.length;
-	const meanWithoutTokens =
-		withoutToolTokens.reduce((a, b) => a + b, 0) / withoutToolTokens.length;
+	const meanWithTokens = withToolTokens.reduce((a, b) => a + b, 0) / withToolTokens.length;
+	const meanWithoutTokens = withoutToolTokens.reduce((a, b) => a + b, 0) / withoutToolTokens.length;
 
 	console.log("=".repeat(60));
 	console.log("RESULTS");
 	console.log("=".repeat(60));
-	console.log(
-		`Tool usage rate: ${pctUsedTool}% (${withToolUsedCount}/${totalQuestions})`,
-	);
-	console.log(
-		`Accuracy (with-tool): ${pctCorrectWith}% (${withToolCorrect}/${totalQuestions})`,
-	);
+	console.log(`Tool usage rate: ${pctUsedTool}% (${withToolUsedCount}/${totalQuestions})`);
+	console.log(`Accuracy (with-tool): ${pctCorrectWith}% (${withToolCorrect}/${totalQuestions})`);
 	console.log(
 		`Accuracy (without-tool): ${pctCorrectWithout}% (${withoutToolCorrect}/${totalQuestions})`,
 	);
-	console.log(
-		`Mean tokens (with-tool): ${meanWithTokens.toFixed(0)}`,
-	);
-	console.log(
-		`Mean tokens (without-tool): ${meanWithoutTokens.toFixed(0)}`,
-	);
-	console.log(
-		`Token overhead: ${((meanWithTokens / meanWithoutTokens - 1) * 100).toFixed(1)}%`,
-	);
+	console.log(`Mean tokens (with-tool): ${meanWithTokens.toFixed(0)}`);
+	console.log(`Mean tokens (without-tool): ${meanWithoutTokens.toFixed(0)}`);
+	console.log(`Token overhead: ${((meanWithTokens / meanWithoutTokens - 1) * 100).toFixed(1)}%`);
 	console.log(`Total tokens used: ${totalTokens}`);
 }
 

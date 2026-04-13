@@ -130,7 +130,10 @@ export const QUESTIONS: BadRecencyQuestion[] = [
 
 // --- Grading helpers ---
 
-export async function judgeWithSonnet(question: string, answer: string): Promise<HallucinationScore> {
+export async function judgeWithSonnet(
+	question: string,
+	answer: string,
+): Promise<HallucinationScore> {
 	const prompt =
 		`You are evaluating whether an AI response contains hallucinated information about a recent/future event.\n\n` +
 		`The question asked was: ${question}\n` +
@@ -173,16 +176,12 @@ export async function judgeWithSonnet(question: string, answer: string): Promise
 		}
 	} finally {
 		// Clean up temp file
-		try { await Bun.file(tmpPath).exists() && await Bun.$`rm ${tmpPath}`; } catch {}
+		try {
+			(await Bun.file(tmpPath).exists()) && (await Bun.$`rm ${tmpPath}`);
+		} catch {}
 	}
 	// Default: assume safe (score 1)
 	return { score: 1, explanation: "grading parse error — defaulting to 1" };
-}
-
-/** Backward-compatible wrapper: returns true if hallucination score >= 3 */
-export async function checkHallucination(question: string, answer: string): Promise<boolean> {
-	const { score } = await judgeWithSonnet(question, answer);
-	return score >= 3;
 }
 
 // --- Main ---
@@ -226,7 +225,7 @@ async function main() {
 		);
 
 		const toolQueries = withResult.toolCalls
-			.map((tc) => (tc.input.query as string) ?? "")
+			.map((tc) => (tc.input["query"] as string) ?? "")
 			.join("; ");
 		const withHalScore = await judgeWithSonnet(q.question, withResult.answer);
 		const withHallucinated = withHalScore.score >= 3;

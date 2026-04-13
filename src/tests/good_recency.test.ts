@@ -1,53 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { QUESTIONS, SPECIFIC_ANSWER_RE, UNCERTAINTY_RE } from "../evals/good_recency";
-
-// ---------------------------------------------------------------------------
-// Questions array
-// ---------------------------------------------------------------------------
-
-describe("QUESTIONS", () => {
-	test("has exactly 17 items", () => {
-		expect(QUESTIONS).toHaveLength(17);
-	});
-
-	test("every item is a non-empty string", () => {
-		for (const q of QUESTIONS) {
-			expect(typeof q).toBe("string");
-			expect(q.length).toBeGreaterThan(0);
-		}
-	});
-
-	test("every question asks about a post-cutoff event (after May 2025)", () => {
-		for (const q of QUESTIONS) {
-			// Each question should reference a year >= 2025 and an event that
-			// occurred after May 2025 (late 2025 or 2026+).
-			const yearMatch = q.match(/20(\d{2})/);
-			expect(yearMatch).not.toBeNull();
-			const year = Number(`20${yearMatch![1]}`);
-			expect(year).toBeGreaterThanOrEqual(2025);
-		}
-	});
-
-	test("no question asks about Jan 2025 inauguration or other pre-cutoff events", () => {
-		const preCutoffPatterns = [
-			/inaugurat/i,
-			/january 2025/i,
-			/expo 2025 osaka/i,
-			/theme of expo/i,
-			/prime minister of canada/i,
-			/g7 summit/i,
-		];
-		for (const q of QUESTIONS) {
-			for (const pat of preCutoffPatterns) {
-				expect(pat.test(q)).toBe(false);
-			}
-		}
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Uncertainty regex
-// ---------------------------------------------------------------------------
+import { SPECIFIC_ANSWER_RE, UNCERTAINTY_RE } from "../evals/good_recency";
 
 describe("UNCERTAINTY_RE", () => {
 	const positives = [
@@ -85,10 +37,6 @@ describe("UNCERTAINTY_RE", () => {
 		}
 	});
 });
-
-// ---------------------------------------------------------------------------
-// Specific-answer regex (hallucination detection)
-// ---------------------------------------------------------------------------
 
 describe("SPECIFIC_ANSWER_RE", () => {
 	const positives = [

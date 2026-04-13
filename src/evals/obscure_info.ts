@@ -5,11 +5,11 @@
 
 import {
 	DEFAULT_MODEL,
-	WIKI_TOOL,
 	defaultToolHandler,
 	initLog,
 	matchesAny,
 	runAgentLoop,
+	WIKI_TOOL,
 	writeTsvResults,
 } from "./utils";
 
@@ -41,8 +41,7 @@ export const SYSTEM_PROMPT =
 
 export const QUESTIONS: ObscureQuestion[] = [
 	{
-		question:
-			"What was the population of Oymyakon, Russia according to the 2010 Russian census?",
+		question: "What was the population of Oymyakon, Russia according to the 2010 Russian census?",
 		expectedAnswer: "462",
 		judgeType: "numeric",
 		numericValue: 462,
@@ -140,8 +139,7 @@ export const QUESTIONS: ObscureQuestion[] = [
 		acceptableAnswers: ["Vincenzo Scamozzi", "Scamozzi"],
 	},
 	{
-		question:
-			"What is the height of the Chamarel Waterfall in Mauritius, in meters?",
+		question: "What is the height of the Chamarel Waterfall in Mauritius, in meters?",
 		expectedAnswer: "95",
 		judgeType: "numeric",
 		numericValue: 95,
@@ -155,16 +153,14 @@ export const QUESTIONS: ObscureQuestion[] = [
 		acceptableAnswers: ["Guy Maunsell", "Guy Anson Maunsell", "Maunsell"],
 	},
 	{
-		question:
-			"What is the length of the Vardø Tunnel, Norway's first subsea tunnel, in meters?",
+		question: "What is the length of the Vardø Tunnel, Norway's first subsea tunnel, in meters?",
 		expectedAnswer: "2890",
 		judgeType: "numeric",
 		numericValue: 2890,
 		tolerancePct: 2,
 	},
 	{
-		question:
-			"What is the area of Deception Island in Antarctica, in square kilometers?",
+		question: "What is the area of Deception Island in Antarctica, in square kilometers?",
 		expectedAnswer: "79",
 		judgeType: "numeric",
 		numericValue: 79,
@@ -225,7 +221,6 @@ async function runQuestion(
 	log: (entry: unknown) => Promise<void>,
 ) {
 	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-	const toolHandler = mode === "with-tool" ? defaultToolHandler : undefined;
 
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
@@ -234,13 +229,13 @@ async function runQuestion(
 			system: SYSTEM_PROMPT,
 			userMessage: q.question,
 			tools,
-			toolHandler,
+			...(mode === "with-tool" ? { toolHandler: defaultToolHandler } : {}),
 		},
 		log,
 	);
 
 	const isCorrect = judge(q, result.answer);
-	const toolQueries = result.toolCalls.map((tc) => tc.input.query ?? "").join("; ");
+	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
 
 	console.log(
 		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
@@ -337,7 +332,7 @@ async function main() {
 	// Per-question table
 	console.log(`\n  ${"Question".padEnd(65)} ${"With".padEnd(7)} Without`);
 	console.log(`  ${"─".repeat(65)} ${"─".repeat(7)} ${"─".repeat(7)}`);
-	for (const { q, i } of questionsToRun) {
+	for (const { q } of questionsToRun) {
 		const wt = withToolRows.find((r) => r[0] === q.question);
 		const wo = withoutToolRows.find((r) => r[0] === q.question);
 		const short = q.question.slice(0, 63).padEnd(65);

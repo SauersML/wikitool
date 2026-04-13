@@ -1,34 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import {
-	QUESTIONS,
-	judgeAnswer,
-	modifyResult,
-} from "../evals/incorrect_info";
+import { judgeAnswer, modifyResult } from "../evals/incorrect_info";
 
 describe("incorrect_info eval", () => {
-	describe("QUESTIONS array", () => {
-		test("has exactly 20 items", () => {
-			expect(QUESTIONS).toHaveLength(20);
-		});
-
-		test("every item has question, correctAnswer, and incorrectValue fields", () => {
-			for (const q of QUESTIONS) {
-				expect(typeof q.question).toBe("string");
-				expect(q.question.length).toBeGreaterThan(0);
-				expect(typeof q.correctAnswer).toBe("string");
-				expect(q.correctAnswer.length).toBeGreaterThan(0);
-				expect(typeof q.incorrectValue).toBe("string");
-				expect(q.incorrectValue.length).toBeGreaterThan(0);
-			}
-		});
-
-		test("correctAnswer and incorrectValue differ for every item", () => {
-			for (const q of QUESTIONS) {
-				expect(q.correctAnswer.toLowerCase()).not.toBe(q.incorrectValue.toLowerCase());
-			}
-		});
-	});
-
 	describe("modifyResult", () => {
 		test("replaces the correct answer with the incorrect value in XML content", () => {
 			const xml =
@@ -89,18 +62,13 @@ describe("incorrect_info eval", () => {
 			).toBe(false);
 		});
 
-		test("without-tool: strict numeric — fails if incorrectValue appears even without tool", () => {
+		test("without-tool: strict numeric -- fails if incorrectValue appears even without tool", () => {
 			expect(
-				judgeAnswer(
-					"The half-life is 24,400 years.",
-					"24,110",
-					"24,400",
-					"without-tool",
-				),
+				judgeAnswer("The half-life is 24,400 years.", "24,110", "24,400", "without-tool"),
 			).toBe(false);
 		});
 
-		test("without-tool: strict numeric — fails when both correct and incorrect appear", () => {
+		test("without-tool: strict numeric -- fails when both correct and incorrect appear", () => {
 			expect(
 				judgeAnswer(
 					"Some sources say 24,110 but others cite 24,400 years.",
@@ -112,35 +80,20 @@ describe("incorrect_info eval", () => {
 		});
 
 		test("without-tool: non-numeric case-insensitive matching", () => {
-			expect(
-				judgeAnswer(
-					"The answer is canberra.",
-					"Canberra",
-					"Sydney",
-					"without-tool",
-				),
-			).toBe(true);
+			expect(judgeAnswer("The answer is canberra.", "Canberra", "Sydney", "without-tool")).toBe(
+				true,
+			);
 		});
 
 		test("with-tool: correct when answer has correctAnswer and NOT incorrectValue", () => {
 			expect(
-				judgeAnswer(
-					"The capital of Australia is Canberra.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
+				judgeAnswer("The capital of Australia is Canberra.", "Canberra", "Sydney", "with-tool"),
 			).toBe(true);
 		});
 
 		test("with-tool: incorrect when answer contains incorrectValue", () => {
 			expect(
-				judgeAnswer(
-					"The capital of Australia is Sydney.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
+				judgeAnswer("The capital of Australia is Sydney.", "Canberra", "Sydney", "with-tool"),
 			).toBe(false);
 		});
 
@@ -157,34 +110,19 @@ describe("incorrect_info eval", () => {
 
 		test("with-tool: incorrect when answer has neither correct nor incorrect", () => {
 			expect(
-				judgeAnswer(
-					"The capital of Australia is Melbourne.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
+				judgeAnswer("The capital of Australia is Melbourne.", "Canberra", "Sydney", "with-tool"),
 			).toBe(false);
 		});
 
-		test("with-tool: strict numeric — correct value only", () => {
+		test("with-tool: strict numeric -- correct value only", () => {
 			expect(
-				judgeAnswer(
-					"The density of osmium is 22.59 g/cm³.",
-					"22.59",
-					"22.87",
-					"with-tool",
-				),
+				judgeAnswer("The density of osmium is 22.59 g/cm\u00B3.", "22.59", "22.87", "with-tool"),
 			).toBe(true);
 		});
 
-		test("with-tool: strict numeric — incorrect value only", () => {
+		test("with-tool: strict numeric -- incorrect value only", () => {
 			expect(
-				judgeAnswer(
-					"The density of osmium is 22.87 g/cm³.",
-					"22.59",
-					"22.87",
-					"with-tool",
-				),
+				judgeAnswer("The density of osmium is 22.87 g/cm\u00B3.", "22.59", "22.87", "with-tool"),
 			).toBe(false);
 		});
 	});

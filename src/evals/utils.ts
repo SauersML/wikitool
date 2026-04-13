@@ -1,5 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { appendFile, mkdir } from "node:fs/promises";
+import Anthropic from "@anthropic-ai/sdk";
 import { QUERY_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
 import { searchWikipedia } from "../tool/search";
 
@@ -7,7 +7,7 @@ import { searchWikipedia } from "../tool/search";
 
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
-export const client = new Anthropic();
+const client = new Anthropic();
 
 export const WIKI_TOOL: Anthropic.Messages.Tool = {
 	name: TOOL_NAME,
@@ -44,10 +44,7 @@ export interface AgentResult {
 	toolDurationMs: number;
 }
 
-export type ToolHandler = (
-	name: string,
-	input: Record<string, unknown>,
-) => Promise<string>;
+export type ToolHandler = (name: string, input: Record<string, unknown>) => Promise<string>;
 
 export interface RunOptions {
 	system: string;
@@ -67,7 +64,7 @@ export async function defaultToolHandler(
 	input: Record<string, unknown>,
 ): Promise<string> {
 	if (name === TOOL_NAME) {
-		return searchWikipedia(input.query as string);
+		return searchWikipedia(input["query"] as string);
 	}
 	return `Unknown tool: ${name}`;
 }
@@ -87,7 +84,7 @@ export async function initLog(
 	await mkdir(dir, { recursive: true });
 	const path = `${dir}/${evalName}_${timestamp()}.log`;
 	const log = async (entry: unknown) => {
-		await appendFile(path, JSON.stringify(entry) + "\n", "utf-8");
+		await appendFile(path, `${JSON.stringify(entry)}\n`, "utf-8");
 	};
 	return { log, path };
 }
@@ -103,7 +100,7 @@ export async function writeTsvResults(
 	await mkdir(dir, { recursive: true });
 	const path = `${dir}/${evalName}_${timestamp()}.tsv`;
 	const lines = [headers.join("\t"), ...rows.map((r) => r.join("\t"))];
-	await Bun.write(path, lines.join("\n") + "\n");
+	await Bun.write(path, `${lines.join("\n")}\n`);
 	console.log(`Results written to ${path}`);
 	return path;
 }
@@ -211,15 +208,25 @@ export async function runAgentLoop(
 	const lastMsg = messages.at(-1);
 	let answer = "";
 	if (lastMsg?.role === "assistant" && Array.isArray(lastMsg.content)) {
-		const textBlocks = (
-			lastMsg.content as Anthropic.Messages.ContentBlock[]
-		).filter((b): b is Anthropic.Messages.TextBlock => b.type === "text");
+		const textBlocks = (lastMsg.content as Anthropic.Messages.ContentBlock[]).filter(
+			(b): b is Anthropic.Messages.TextBlock => b.type === "text",
+		);
 		const lastText = textBlocks.at(-1);
 		if (lastText) answer = lastText.text;
 	}
 
 	const durationMs = performance.now() - startTime;
-	return { answer, turns, inputTokens, outputTokens, usedTool, toolCalls, messages, durationMs, toolDurationMs };
+	return {
+		answer,
+		turns,
+		inputTokens,
+		outputTokens,
+		usedTool,
+		toolCalls,
+		messages,
+		durationMs,
+		toolDurationMs,
+	};
 }
 
 // --- Model grading ---
@@ -230,9 +237,7 @@ export async function gradeWithModel(prompt: string, model?: string): Promise<st
 		max_tokens: 512,
 		messages: [{ role: "user", content: prompt }],
 	});
-	const text = response.content.find(
-		(b): b is Anthropic.Messages.TextBlock => b.type === "text",
-	);
+	const text = response.content.find((b): b is Anthropic.Messages.TextBlock => b.type === "text");
 	return text?.text ?? "";
 }
 
@@ -253,8 +258,7 @@ export function computeCohensD(group1: number[], group2: number[]): number {
 	const v1 = variance(group1, m1);
 	const v2 = variance(group2, m2);
 	const pooledSD = Math.sqrt(
-		((group1.length - 1) * v1 + (group2.length - 1) * v2) /
-			(group1.length + group2.length - 2),
+		((group1.length - 1) * v1 + (group2.length - 1) * v2) / (group1.length + group2.length - 2),
 	);
 	if (pooledSD === 0) return 0;
 	return (m2 - m1) / pooledSD;

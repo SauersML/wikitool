@@ -332,7 +332,7 @@ function extractSection(wikitext: string, name: string, query?: string): string 
 	const full = wikitext.slice(start, start + m[0].length + (end?.index ?? rest.length)).trim();
 
 	// Skip cap if the query contains the exact section name
-	if (query && query.toLowerCase().includes(name.toLowerCase())) return full;
+	if (query?.toLowerCase().includes(name.toLowerCase())) return full;
 	if (full.length <= SECTION_CAP) return full;
 
 	// Select complete sentences/paragraphs from the center of the section
@@ -394,7 +394,8 @@ function extractSection(wikitext: string, name: string, query?: string): string 
 	const maxSel = Math.max(...selected);
 	const parts: string[] = [];
 	for (let i = minSel; i <= maxSel; i++) {
-		if (selected.has(i) && chunks[i]) parts.push(chunks[i]);
+		const chunk = chunks[i];
+		if (selected.has(i) && chunk) parts.push(chunk);
 	}
 	const prefix = minSel > 0 ? "[...] " : "";
 	const suffix = maxSel < chunks.length - 1 ? "\n[...]" : "";
@@ -455,7 +456,7 @@ function splitChunks(text: string): string[] {
 	// closing punctuation and then a space + uppercase letter or newline.
 	// Uses a lookbehind to avoid splitting on abbreviations like "Dr." or "U.S."
 	// by requiring at least 10 chars before the split point.
-	const sentenceSplit = /([.!?]["')»\]]*)\s+(?=[A-Z\['\("])/g;
+	const sentenceSplit = /([.!?]["')»\]]*)\s+(?=[A-Z['("])/g;
 
 	for (const para of paragraphs) {
 		if (para.length <= 300) {
@@ -465,9 +466,8 @@ function splitChunks(text: string): string[] {
 		// Split long paragraphs into sentences
 		let last = 0;
 		sentenceSplit.lastIndex = 0;
-		let m: RegExpExecArray | null;
-		while ((m = sentenceSplit.exec(para)) !== null) {
-			const end = m.index + m[1].length;
+		for (let m = sentenceSplit.exec(para); m !== null; m = sentenceSplit.exec(para)) {
+			const end = m.index + m[1]!.length;
 			chunks.push(para.slice(last, end));
 			last = end;
 		}
@@ -613,7 +613,11 @@ async function articleResult(
 	return xml;
 }
 
-async function searchResults(query: string, search: SearchResponse, seen?: SeenPages): Promise<string> {
+async function searchResults(
+	query: string,
+	search: SearchResponse,
+	seen?: SeenPages,
+): Promise<string> {
 	if (search.hits.length === 0) {
 		let xml = `<result query="${x(query)}"><no_results`;
 		if (search.suggestion) xml += ` suggestion="${x(search.suggestion)}"`;

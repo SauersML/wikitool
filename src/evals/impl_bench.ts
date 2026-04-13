@@ -12,7 +12,7 @@
 //   bun run src/evals/impl_bench.ts eval <index>          — evaluate existing code with Opus
 
 import { mkdir } from "node:fs/promises";
-import { initLog, writeTsvResults, timestamp } from "./utils";
+import { initLog, writeTsvResults } from "./utils";
 
 // --- Types ---
 
@@ -98,8 +98,7 @@ export const QUESTIONS: AlgorithmQuestion[] = [
 	{
 		name: "Hopcroft-Karp bipartite matching",
 		article: "Hopcroft\u2013Karp algorithm",
-		prompt:
-			"Implement the Hopcroft-Karp algorithm for maximum bipartite matching in Python.",
+		prompt: "Implement the Hopcroft-Karp algorithm for maximum bipartite matching in Python.",
 	},
 	{
 		name: "Suffix array construction (SA-IS)",
@@ -116,8 +115,7 @@ export const QUESTIONS: AlgorithmQuestion[] = [
 	{
 		name: "Burrows-Wheeler transform and inverse",
 		article: "Burrows\u2013Wheeler transform",
-		prompt:
-			"Implement the Burrows-Wheeler transform and its inverse in Python.",
+		prompt: "Implement the Burrows-Wheeler transform and its inverse in Python.",
 	},
 	{
 		name: "Treap with split and merge",
@@ -182,7 +180,10 @@ function worktreeName(algorithm: string, mode: string): string {
 	return `impl-${sanitizeName(algorithm)}-${mode}`;
 }
 
-async function runClaude(args: string[], timeoutMs = 600_000): Promise<{ stdout: string; exitCode: number }> {
+async function runClaude(
+	args: string[],
+	timeoutMs = 600_000,
+): Promise<{ stdout: string; exitCode: number }> {
 	const proc = Bun.spawn(["claude", ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
@@ -222,7 +223,16 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	console.log(`  Launching Sonnet...`);
 
 	const { stdout, exitCode } = await runClaude(
-		["-w", wt, "--model", SONNET, "-p", prompt, "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia"],
+		[
+			"-w",
+			wt,
+			"--model",
+			SONNET,
+			"-p",
+			prompt,
+			"--allowedTools",
+			"Edit,Write,Bash,Read,Glob,Grep,mcp__claude_ai_wikisearch__search_wikipedia",
+		],
 		600_000,
 	);
 
@@ -256,7 +266,7 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 		`You are evaluating a Python implementation of ${q.name}.`,
 		"",
 		`1. Read the file \`${pyFile}\` in the current directory.`,
-		"2. Try to run it with \`python3 ${pyFile}\` and observe the output.",
+		`2. Try to run it with \`python3 ${pyFile}\` and observe the output.`,
 		"3. If it fails, note the error. Try to understand what went wrong.",
 		"4. Write a few additional test cases and run them to verify correctness.",
 		"5. Grade the implementation on this rubric (1-10 each):",
@@ -266,9 +276,9 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 		"   - COMPLETION: Is the implementation complete? Edge cases handled?",
 		"",
 		"After your analysis, output EXACTLY this JSON block as the LAST thing in your response:",
-		'```json',
+		"```json",
 		'{"correctness": N, "helpfulness": N, "elegance": N, "completion": N, "ran_successfully": true/false, "notes": "brief explanation"}',
-		'```',
+		"```",
 	].join("\n");
 
 	console.log(`  Launching Opus evaluator...`);
@@ -276,16 +286,22 @@ async function evaluate(index: number, worktreePath: string, mode: string): Prom
 	// Run Opus in the worktree directory (cd into it, no -w flag)
 	const wtDir = `${process.cwd()}/.claude/worktrees/${worktreePath}`;
 	const { stdout, exitCode } = await runClaude(
-		["--model", OPUS, "-p", prompt, "--cwd", wtDir, "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep"],
+		[
+			"--model",
+			OPUS,
+			"-p",
+			prompt,
+			"--cwd",
+			wtDir,
+			"--allowedTools",
+			"Edit,Write,Bash,Read,Glob,Grep",
+		],
 		600_000,
 	);
 
 	// Save Opus log
 	const logDir = `${import.meta.dir}/../../logs`;
-	await Bun.write(
-		`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.log`,
-		stdout,
-	);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.log`, stdout);
 
 	console.log(`  Opus exit code: ${exitCode}`);
 
@@ -331,14 +347,22 @@ export function parseGradeFromOutput(output: string): GradeResult {
 
 // --- Run single algorithm end-to-end ---
 
-async function runOne(index: number, useTool: boolean): Promise<{ run: RunResult; grade: GradeResult }> {
+async function runOne(
+	index: number,
+	useTool: boolean,
+): Promise<{ run: RunResult; grade: GradeResult }> {
 	const implResult = await implement(index, useTool);
 	const gradeResult = await evaluate(index, implResult.worktree, implResult.mode);
 
 	const total =
-		gradeResult.correctness + gradeResult.helpfulness + gradeResult.elegance + gradeResult.completion;
+		gradeResult.correctness +
+		gradeResult.helpfulness +
+		gradeResult.elegance +
+		gradeResult.completion;
 
-	console.log(`  Grade: correctness=${gradeResult.correctness} helpfulness=${gradeResult.helpfulness} elegance=${gradeResult.elegance} completion=${gradeResult.completion} total=${total}/40`);
+	console.log(
+		`  Grade: correctness=${gradeResult.correctness} helpfulness=${gradeResult.helpfulness} elegance=${gradeResult.elegance} completion=${gradeResult.completion} total=${total}/40`,
+	);
 	console.log(`  Ran successfully: ${gradeResult.ran_successfully}`);
 	if (gradeResult.notes) console.log(`  Notes: ${gradeResult.notes}`);
 
@@ -418,8 +442,12 @@ async function runAll(): Promise<void> {
 	const mean = (subset: string[][], col: number) =>
 		subset.reduce((sum, r) => sum + Number(r[col]), 0) / subset.length;
 
-	console.log(`  With tool:  mean score ${mean(withTool, 7).toFixed(1)}/40, ran ok ${withTool.filter((r) => r[8] === "true").length}/${withTool.length}`);
-	console.log(`  No tool:    mean score ${mean(noTool, 7).toFixed(1)}/40, ran ok ${noTool.filter((r) => r[8] === "true").length}/${noTool.length}`);
+	console.log(
+		`  With tool:  mean score ${mean(withTool, 7).toFixed(1)}/40, ran ok ${withTool.filter((r) => r[8] === "true").length}/${withTool.length}`,
+	);
+	console.log(
+		`  No tool:    mean score ${mean(noTool, 7).toFixed(1)}/40, ran ok ${noTool.filter((r) => r[8] === "true").length}/${noTool.length}`,
+	);
 }
 
 // --- Evaluate existing worktree ---
@@ -446,7 +474,7 @@ async function evalExisting(index: number): Promise<void> {
 				return;
 			}
 		} catch {
-			continue;
+			// try next mode
 		}
 	}
 	console.error(`No worktree found for "${q.name}". Run it first.`);
@@ -462,10 +490,18 @@ function printUsage() {
 	console.log("");
 	console.log("Usage:");
 	console.log("  bun run src/evals/impl_bench.ts                          — print this help");
-	console.log("  bun run src/evals/impl_bench.ts run <index>              — implement + evaluate with tool");
-	console.log("  bun run src/evals/impl_bench.ts run <index> --no-tool    — implement + evaluate without tool");
-	console.log("  bun run src/evals/impl_bench.ts all                      — run all 20 in both modes");
-	console.log("  bun run src/evals/impl_bench.ts eval <index>             — re-evaluate existing worktree with Opus");
+	console.log(
+		"  bun run src/evals/impl_bench.ts run <index>              — implement + evaluate with tool",
+	);
+	console.log(
+		"  bun run src/evals/impl_bench.ts run <index> --no-tool    — implement + evaluate without tool",
+	);
+	console.log(
+		"  bun run src/evals/impl_bench.ts all                      — run all 20 in both modes",
+	);
+	console.log(
+		"  bun run src/evals/impl_bench.ts eval <index>             — re-evaluate existing worktree with Opus",
+	);
 	console.log("");
 	console.log(`Algorithms (${QUESTIONS.length}):`);
 	for (let i = 0; i < QUESTIONS.length; i++) {
@@ -519,9 +555,8 @@ async function main() {
 }
 
 const isMainModule =
-	import.meta.url === `file://${process.argv[1]}` ||
-	process.argv[1]?.endsWith("impl_bench.ts");
+	import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("impl_bench.ts");
 
-if (isMainModule && !process.env.BUN_TEST) {
+if (isMainModule && !process.env["BUN_TEST"]) {
 	main();
 }

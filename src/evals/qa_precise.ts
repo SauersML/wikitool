@@ -1,14 +1,14 @@
 // QA Capability eval for the Wikipedia search tool
 // Measures how much the tool improves the model's ability to answer hard questions.
 // Grading uses Claude Sonnet via headless CLI with web search for verification.
-// Usage: bun src/evals/qa_capability.ts [questionIndex]
+// Usage: bun src/evals/qa_precise.ts [questionIndex]
 
 import {
 	DEFAULT_MODEL,
-	WIKI_TOOL,
 	defaultToolHandler,
 	initLog,
 	runAgentLoop,
+	WIKI_TOOL,
 	writeTsvResults,
 } from "./utils";
 
@@ -94,8 +94,7 @@ export const QUESTIONS: Question[] = [
 		domain: "CS",
 	},
 	{
-		question:
-			"What is the Scoville rating of the Carolina Reaper pepper and who developed it?",
+		question: "What is the Scoville rating of the Carolina Reaper pepper and who developed it?",
 		expected:
 			"Average 1,641,183 SHU (peak over 2.2 million); developed by Ed Currie of PuckerButt Pepper Company",
 		domain: "Food Science",
@@ -148,8 +147,8 @@ export function parseGradeResponse(raw: string): GradeResult {
 	const correctMatch = raw.match(/"correct"\s*:\s*(true|false)/);
 	const qualityMatch = raw.match(/"quality"\s*:\s*(\d)/);
 
-	const correct = correctMatch ? correctMatch[1] === "true" : false;
-	const quality = qualityMatch ? Number.parseInt(qualityMatch[1], 10) : 1;
+	const correct = correctMatch?.[1] === "true";
+	const quality = qualityMatch?.[1] ? Number.parseInt(qualityMatch[1], 10) : 1;
 
 	return { correct, quality };
 }
@@ -165,8 +164,7 @@ async function gradeWithSonnet(prompt: string): Promise<string> {
 
 async function main() {
 	const singleIndex = process.argv[2] ? Number.parseInt(process.argv[2], 10) : undefined;
-	const questionsToRun =
-		singleIndex !== undefined ? [QUESTIONS[singleIndex]] : QUESTIONS;
+	const questionsToRun = singleIndex !== undefined ? [QUESTIONS[singleIndex]!] : QUESTIONS;
 	const startIndex = singleIndex ?? 0;
 
 	if (singleIndex !== undefined && !QUESTIONS[singleIndex]) {
@@ -181,7 +179,7 @@ async function main() {
 	);
 	console.log("");
 
-	const { log } = await initLog("qa_capability");
+	const { log } = await initLog("qa_precise");
 
 	const rows: string[][] = [];
 	const withToolResults: { correct: boolean; quality: number }[] = [];
@@ -190,7 +188,7 @@ async function main() {
 	let totalOutputTokens = 0;
 
 	for (let i = 0; i < questionsToRun.length; i++) {
-		const q = questionsToRun[i];
+		const q = questionsToRun[i]!;
 		const qIndex = startIndex + i;
 		console.log(`[${qIndex}] ${q.domain}: ${q.question.slice(0, 70)}...`);
 
@@ -207,7 +205,7 @@ async function main() {
 		);
 
 		const toolQueries = withTool.toolCalls
-			.map((tc) => (tc.input.query as string) ?? "")
+			.map((tc) => (tc.input["query"] as string) ?? "")
 			.join("; ");
 
 		const withGradePrompt = buildGradePrompt(q.question, q.expected, withTool.answer);
@@ -287,7 +285,7 @@ async function main() {
 		"input_tokens",
 		"output_tokens",
 	];
-	await writeTsvResults("qa_capability", headers, rows);
+	await writeTsvResults("qa_precise", headers, rows);
 
 	// --- Summary ---
 	const withCorrectPct =
@@ -302,16 +300,19 @@ async function main() {
 	console.log("=".repeat(50));
 	console.log("SUMMARY");
 	console.log("=".repeat(50));
-	console.log(`  With tool:    ${withCorrectPct.toFixed(0)}% correct, mean quality ${withMeanQuality.toFixed(2)}`);
-	console.log(`  Without tool: ${withoutCorrectPct.toFixed(0)}% correct, mean quality ${withoutMeanQuality.toFixed(2)}`);
+	console.log(
+		`  With tool:    ${withCorrectPct.toFixed(0)}% correct, mean quality ${withMeanQuality.toFixed(2)}`,
+	);
+	console.log(
+		`  Without tool: ${withoutCorrectPct.toFixed(0)}% correct, mean quality ${withoutMeanQuality.toFixed(2)}`,
+	);
 	console.log(`  Total tokens: ${totalInputTokens} input, ${totalOutputTokens} output`);
 }
 
 // Only run when executed directly, not when imported
 const isMainModule =
-	import.meta.url === `file://${process.argv[1]}` ||
-	process.argv[1]?.endsWith("qa_capability.ts");
+	import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("qa_precise.ts");
 
-if (isMainModule && !process.env.BUN_TEST) {
+if (isMainModule && !process.env["BUN_TEST"]) {
 	main();
 }

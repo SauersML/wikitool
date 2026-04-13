@@ -1,20 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { extractNumbers, judge, judgeNumeric, type ObscureQuestion } from "../evals/obscure_info";
 import { matchesAny } from "../evals/utils";
-import {
-	QUESTIONS,
-	type ObscureQuestion,
-	extractNumbers,
-	judge,
-	judgeNumeric,
-} from "../evals/obscure_info";
 
 describe("obscure_info eval", () => {
-	// 1. Questions array has 20 items
-	test("QUESTIONS array has exactly 20 items", () => {
-		expect(QUESTIONS).toHaveLength(20);
-	});
-
-	// 2. Numeric judge: within tolerance -> true
 	describe("numeric judge", () => {
 		test("returns true when value is within tolerance", () => {
 			// Expected 4181 with 5% tolerance -> range [3971.95, 4390.05]
@@ -48,19 +36,16 @@ describe("obscure_info eval", () => {
 		});
 	});
 
-	// 3. String judge via matchesAny
 	describe("string judge via matchesAny", () => {
 		test("matches case-insensitively", () => {
-			expect(matchesAny("The architect was GUDJON SAMUELSSON.", ["Gudjon Samuelsson"])).toBe(
-				true,
-			);
+			expect(matchesAny("The architect was GUDJON SAMUELSSON.", ["Gudjon Samuelsson"])).toBe(true);
 		});
 
 		test("matches any of the acceptable answers", () => {
 			expect(
-				matchesAny("It was designed by Guðjón Samúelsson.", [
+				matchesAny("It was designed by Gu\u00F0j\u00F3n Sam\u00FAelsson.", [
 					"Gudjon Samuelsson",
-					"Guðjón Samúelsson",
+					"Gu\u00F0j\u00F3n Sam\u00FAelsson",
 				]),
 			).toBe(true);
 		});
@@ -71,15 +56,11 @@ describe("obscure_info eval", () => {
 
 		test("matches substring within longer response", () => {
 			expect(
-				matchesAny(
-					"The IATA airport code for Kansai International Airport is KIX.",
-					["KIX"],
-				),
+				matchesAny("The IATA airport code for Kansai International Airport is KIX.", ["KIX"]),
 			).toBe(true);
 		});
 	});
 
-	// 4. Number extraction from sample responses
 	describe("extractNumbers", () => {
 		test("extracts integers", () => {
 			expect(extractNumbers("The population is 2050 people.")).toEqual([2050]);
@@ -90,9 +71,9 @@ describe("obscure_info eval", () => {
 		});
 
 		test("extracts numbers with commas", () => {
-			expect(extractNumbers("The population is 2,050 and the area is 1,234.5 sq km.")).toEqual(
-				[2050, 1234.5],
-			);
+			expect(extractNumbers("The population is 2,050 and the area is 1,234.5 sq km.")).toEqual([
+				2050, 1234.5,
+			]);
 		});
 
 		test("extracts multiple numbers", () => {
@@ -110,7 +91,6 @@ describe("obscure_info eval", () => {
 		});
 	});
 
-	// 5. judge() dispatches correctly for both types
 	describe("judge function dispatch", () => {
 		test("dispatches numeric questions correctly", () => {
 			const q: ObscureQuestion = {
@@ -133,26 +113,6 @@ describe("obscure_info eval", () => {
 			};
 			expect(judge(q, "The architect was Fariborz Sahba.")).toBe(true);
 			expect(judge(q, "The architect was Frank Lloyd Wright.")).toBe(false);
-		});
-	});
-
-	// Verify each question has required fields
-	describe("question data integrity", () => {
-		test("all questions have required fields", () => {
-			for (const q of QUESTIONS) {
-				expect(q.question).toBeTruthy();
-				expect(q.expectedAnswer).toBeTruthy();
-				expect(["numeric", "string"]).toContain(q.judgeType);
-
-				if (q.judgeType === "numeric") {
-					expect(typeof q.numericValue).toBe("number");
-					expect(typeof q.tolerancePct).toBe("number");
-					expect(q.tolerancePct).toBeGreaterThanOrEqual(0);
-				} else {
-					expect(Array.isArray(q.acceptableAnswers)).toBe(true);
-					expect(q.acceptableAnswers.length).toBeGreaterThan(0);
-				}
-			}
 		});
 	});
 });

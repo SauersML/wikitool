@@ -166,7 +166,7 @@ const HTML = `<!DOCTYPE html>
 
   .flow-routes {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 12px;
     width: 100%;
   }
@@ -283,32 +283,28 @@ claude mcp add wikisearch \\
     <div class="flow-node flow-hi">query</div>
     <div class="flow-pipe"></div>
     <div class="flow-split">
-      <div class="flow-node">title lookup<span>does this article exist?</span></div>
-      <div class="flow-node">fulltext search<span>what articles mention this?</span></div>
+      <div class="flow-node">title lookup<span>REST API &mdash; does this exact article exist?</span></div>
+      <div class="flow-node">fulltext search<span>Action API &mdash; what articles mention this?</span></div>
     </div>
     <div class="flow-pipe"></div>
     <div class="flow-routes">
       <div class="flow-route">
-        <div class="flow-tag">exact match</div>
-        <div class="flow-node flow-hi">single article<span>auto-detect relevant sections</span></div>
+        <div class="flow-tag">title found</div>
+        <div class="flow-node flow-hi">single article<span>detect sections from search hits + extra query words &mdash; sections prioritized, intro fills remaining budget</span></div>
       </div>
       <div class="flow-route">
-        <div class="flow-tag">partial match</div>
-        <div class="flow-node flow-hi">single article<span>extra query words select sections</span></div>
-      </div>
-      <div class="flow-route">
-        <div class="flow-tag">no match</div>
-        <div class="flow-node">top 3 results<span>lead section + best matching section</span></div>
+        <div class="flow-tag">no title</div>
+        <div class="flow-node">top 3 results<span>lead + best matching section per result &mdash; budget split evenly across results</span></div>
       </div>
     </div>
     <div class="flow-pipe"></div>
-    <div class="flow-node">clean wikitext<span>strip markup, templates, refs, boilerplate</span></div>
+    <div class="flow-node">parse wikitext per page<span>resolve infoboxes, preserve numeric templates, strip markup/refs/boilerplate</span></div>
+    <div class="flow-pipe"></div>
+    <div class="flow-node">deduplicate per-article<span>sentence-level, across session &mdash; skip already-returned content</span></div>
     <div class="flow-pipe"></div>
     <div class="flow-node">truncate at sentence boundaries</div>
     <div class="flow-pipe"></div>
-    <div class="flow-node">deduplicate across session</div>
-    <div class="flow-pipe"></div>
-    <div class="flow-node flow-hi">response &thinsp;~4K chars</div>
+    <div class="flow-node flow-hi">XML response &thinsp;~4K chars</div>
   </div>
 
   <hr class="divider">
@@ -380,7 +376,7 @@ claude mcp add wikisearch \\
 
     <div class="eval-card">
       <h3>Implementation Benchmark</h3>
-      <p>Sonnet implements 20 non-trivial algorithms in Python (Aho-Corasick, SA-IS, Bentley-Ottmann, Earley parser, and more) in isolated worktrees, then Opus reads the code, runs it, writes additional tests, and grades each implementation.</p>
+      <p>Sonnet implements 20 non-trivial algorithms in Python (Aho-Corasick, SA-IS, Bentley-Ottmann, Earley parser, and more) using a server-side code execution sandbox, then Opus runs the code, writes additional tests, and grades each implementation.</p>
       <div class="eval-meta">20 algorithms &middot; graded by Opus &middot; correctness, helpfulness, elegance, completion (40 pts)</div>
     </div>
   </div>

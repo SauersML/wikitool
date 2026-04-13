@@ -97,9 +97,9 @@ export const QUESTIONS: IncorrectInfoQuestion[] = [
 		incorrectValue: "273",
 	},
 	{
-		question: "Who was the engineer that designed the Vajont Dam in Italy?",
-		correctAnswer: "Carlo Semenza",
-		incorrectValue: "Luigi Semenza",
+		question: "After whom is the Deriner Dam in Artvin Province, Turkey, named?",
+		correctAnswer: "İbrahim Deriner",
+		incorrectValue: "Mehmet Deriner",
 	},
 	{
 		question: "Who was the architect of the Rajabai Clock Tower in Mumbai, India?",

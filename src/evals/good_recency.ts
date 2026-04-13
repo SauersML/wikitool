@@ -31,7 +31,7 @@ export const QUESTIONS = [
 	"Who won the 2025 Ballon d'Or?",
 	"Who won the 2025 Formula 1 World Drivers' Championship?",
 	"Who won the 2025 NBA Finals, and who was named Finals MVP?",
-	"What major agreement was reached at COP30 in Belem in 2025?",
+	"In what city and country was COP30 held in November 2025?",
 	"Who won the 2025 ICC Cricket World Test Championship final?",
 	"Who won the 2025 Nobel Prize in Physics?",
 	"What was the highest-grossing film worldwide in 2025?",
@@ -103,10 +103,7 @@ async function runQuestion(
 
 	const toolQueries = result.toolCalls.map((tc) => String(tc.input["query"] ?? ""));
 
-	let answered = false;
-	if (mode === "with-tool") {
-		answered = await gradeAnswered(question, result.answer);
-	}
+	const answered = await gradeAnswered(question, result.answer);
 
 	return {
 		question,
@@ -159,7 +156,7 @@ async function main() {
 		// Without tool
 		console.log("  mode: without-tool ...");
 		const withoutTool = await runQuestion(q, "without-tool", log);
-		console.log(`    turns=${withoutTool.result.turns}`);
+		console.log(`    answered=${withoutTool.answered}  turns=${withoutTool.result.turns}`);
 		console.log(`    answer: ${withoutTool.result.answer.slice(0, 200)}`);
 		allResults.push(withoutTool);
 
@@ -195,11 +192,14 @@ async function main() {
 
 	// ---- Summary ----
 	const withToolResults = allResults.filter((r) => r.mode === "with-tool");
+	const withoutToolResults = allResults.filter((r) => r.mode === "without-tool");
 
 	const usedToolPct =
 		(withToolResults.filter((r) => r.result.usedTool).length / withToolResults.length) * 100;
-	const answeredPct =
+	const answeredWithPct =
 		(withToolResults.filter((r) => r.answered).length / withToolResults.length) * 100;
+	const answeredWithoutPct =
+		(withoutToolResults.filter((r) => r.answered).length / withoutToolResults.length) * 100;
 
 	const totalInput = allResults.reduce((s, r) => s + r.result.inputTokens, 0);
 	const totalOutput = allResults.reduce((s, r) => s + r.result.outputTokens, 0);
@@ -208,13 +208,19 @@ async function main() {
 	console.log("Summary");
 	console.log("=".repeat(60));
 	console.log(`  Used tool (with-tool):                ${usedToolPct.toFixed(1)}%`);
-	console.log(`  Answered (with-tool):                 ${answeredPct.toFixed(1)}%`);
+	console.log(`  Answered (with-tool):                 ${answeredWithPct.toFixed(1)}%`);
+	console.log(`  Answered (without-tool):              ${answeredWithoutPct.toFixed(1)}%`);
 	console.log(`  Total input tokens:                   ${totalInput}`);
 	console.log(`  Total output tokens:                  ${totalOutput}`);
 	console.log(`  Total tokens:                         ${totalInput + totalOutput}`);
 
 	if (usedToolPct < 80) {
 		console.log("\n  WARNING: tool usage below 80% threshold");
+	}
+	if (answeredWithoutPct > 20) {
+		console.log(
+			"\n  WARNING: without-tool answered rate above 20% — model is fabricating post-cutoff answers",
+		);
 	}
 }
 

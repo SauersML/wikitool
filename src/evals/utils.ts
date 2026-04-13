@@ -249,7 +249,7 @@ export async function runAgentLoop(
 				{
 					role: "user",
 					content:
-						"You have reached the tool use limit. Based on the information you have gathered so far, provide your best answer now.",
+						"You have reached the tool use limit. Based on the information you have gathered so far, provide your best answer now. End with ANSWER: followed by your answer.",
 				},
 			],
 		});

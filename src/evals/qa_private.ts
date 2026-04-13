@@ -85,7 +85,15 @@ export function judgeMultipleChoice(response: string, expectedAnswer: string): b
 		if (expectedAnswer.includes(",")) {
 			return finalAnswer.includes(expectedAnswer);
 		}
-		// For single-letter answers, check the extracted answer
+		// For single-letter answers: prefer the leading letter of the extracted text.
+		// "ANSWER: B" → B, "ANSWER: (B)" → B, "ANSWER: B, because..." → B.
+		// This avoids matching a letter mentioned mid-explanation like
+		// "ANSWER: C is wrong so B" being scored correct for C.
+		const leadMatch = finalAnswer.match(/^\s*\(?([A-Za-z])\)?(?:\s*$|[.,;:!?\s)])/);
+		if (leadMatch) {
+			return leadMatch[1]!.toUpperCase() === expectedAnswer.toUpperCase();
+		}
+		// No clear leading letter — check for standalone letter anywhere in extracted text
 		const escaped = expectedAnswer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		const extractedPatterns = [
 			new RegExp(`^\\s*\\(?${escaped}\\)?\\s*$`, "i"),

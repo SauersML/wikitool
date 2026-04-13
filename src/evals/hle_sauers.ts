@@ -62,8 +62,17 @@ export const QUESTIONS: HLEQuestion[] = parseTsv(tsvContent);
 
 // --- System prompt ---
 
-export const SYSTEM_PROMPT =
-	"You are a helpful assistant taking a challenging exam. Answer each question as accurately as possible. If you have access to a search tool, use it when you think it would help.\n\nIMPORTANT: Always show your reasoning step by step before giving your final answer. Explain your thought process, what you considered, and why you chose your answer.\n\nFor multiple choice questions, reason through the options then clearly state your answer letter. For exact match questions, explain your reasoning then provide a precise answer. For multiple choice, end with ANSWER: followed by the letter. For exact match, end with ANSWER: followed by your answer.";
+export const SYSTEM_PROMPT = `You are a helpful assistant taking a challenging exam. You have access to a Wikipedia search tool — use it when you think it would help.
+
+Think step by step before answering. Show your reasoning.
+
+YOUR FINAL LINE must be exactly:
+ANSWER: <your answer>
+
+For multiple choice, give ONLY the letter: ANSWER: B
+For exact match, give the precise value: ANSWER: 42
+
+Do not write anything after the ANSWER line.`;
 
 // --- Judging ---
 
@@ -102,7 +111,15 @@ export function judgeMultipleChoice(response: string, expectedLetter: string): b
 	// Try extracting from an explicit ANSWER line first
 	const finalAnswer = extractFinalAnswer(response);
 	if (finalAnswer !== null) {
-		// Check if the extracted answer contains the expected letter as a standalone choice
+		// For single-letter answers: prefer the leading letter of the extracted text.
+		// "ANSWER: B" → B, "ANSWER: (B)" → B, "ANSWER: B, because..." → B.
+		// This avoids matching a letter mentioned mid-explanation like
+		// "ANSWER: C is wrong so B" being scored correct for C.
+		const leadMatch = finalAnswer.match(/^\s*\(?([A-Za-z])\)?(?:\s*$|[.,;:!?\s)])/);
+		if (leadMatch) {
+			return leadMatch[1]!.toUpperCase() === letter.toUpperCase();
+		}
+		// No clear leading letter — check for standalone letter anywhere in extracted text
 		const extractedEscaped = escapeRegex(letter);
 		const extractedPatterns = [
 			new RegExp(`^\\s*\\(?${extractedEscaped}\\)?\\s*$`, "i"),

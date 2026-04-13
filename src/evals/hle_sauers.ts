@@ -6,6 +6,7 @@
 import {
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	extractFinalAnswer,
 	gradeWithModel,
 	initLog,
 	runAgentLoop,
@@ -85,8 +86,19 @@ export function judgeMultipleChoice(response: string, expectedLetter: string): b
 	const letter = expectedLetter.trim();
 	const escaped = escapeRegex(letter);
 
-	// Strategy: look for patterns that indicate the model chose this answer.
-	// We check multiple common answer-indicating patterns.
+	// Try extracting from an explicit ANSWER line first
+	const finalAnswer = extractFinalAnswer(response);
+	if (finalAnswer !== null) {
+		// Check if the extracted answer contains the expected letter as a standalone choice
+		const extractedEscaped = escapeRegex(letter);
+		const extractedPatterns = [
+			new RegExp(`^\\s*\\(?${extractedEscaped}\\)?\\s*$`, "i"),
+			new RegExp(`(?:^|[\\s(])${extractedEscaped}(?=$|[\\s.,;:!?)])`, "i"),
+		];
+		return extractedPatterns.some((p) => p.test(finalAnswer));
+	}
+
+	// Fall back to complex pattern matching on the full response
 	const patterns = [
 		// "answer is X", "answer: X", "answer is (X)"
 		new RegExp(`answer\\s+is\\s*:?\\s*\\(?${escaped}\\)?`, "i"),
@@ -116,15 +128,19 @@ export function judgeMultipleChoice(response: string, expectedLetter: string): b
 export function judgeExactMatch(response: string, expectedAnswer: string): boolean {
 	const expected = expectedAnswer.trim();
 
+	// Try to extract a final answer line first to avoid matching incidental mentions
+	const finalAnswer = extractFinalAnswer(response);
+	const textToJudge = finalAnswer ?? response;
+
 	// Direct substring match (case-insensitive)
-	if (response.toLowerCase().includes(expected.toLowerCase())) {
+	if (textToJudge.toLowerCase().includes(expected.toLowerCase())) {
 		return true;
 	}
 
 	// For numeric answers, parse and compare with tolerance
 	const expectedNum = Number.parseFloat(expected);
 	if (!Number.isNaN(expectedNum)) {
-		const numbers = extractNumbers(response);
+		const numbers = extractNumbers(textToJudge);
 		const tolerance = Math.abs(expectedNum) * 0.02; // 2% tolerance
 		if (numbers.some((n) => Math.abs(n - expectedNum) <= tolerance)) {
 			return true;

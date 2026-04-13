@@ -105,6 +105,88 @@ const HTML = `<!DOCTYPE html>
   }
   a:hover { border-color: var(--accent); }
 
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 24px;
+  }
+
+  .flow-node {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 20px;
+    font-size: 13px;
+    color: var(--fg);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  .flow-node span {
+    display: block;
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 2px;
+  }
+
+  .flow-hi {
+    border-color: #2a2520;
+    color: var(--accent);
+  }
+
+  .flow-pipe {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+  }
+
+  .flow-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    width: 100%;
+    position: relative;
+  }
+
+  .flow-split::before {
+    content: "parallel";
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  .flow-split .flow-node { width: 100%; }
+
+  .flow-routes {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .flow-route {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .flow-tag {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+
+  .flow-route .flow-node { width: 100%; }
+
   footer {
     margin-top: 64px;
     font-size: 11px;
@@ -156,9 +238,41 @@ claude mcp add wikisearch \\
 <span class="comment">// general search</span>
 <span class="str">"largest earthquakes in Japan"</span></pre>
 
-  <p>Exact matches return the article with relevant sections. No match returns lead sections of top 3 results. Redirects are followed automatically. Results are XML, ~4000 chars max.</p>
+  <hr class="divider">
 
-  <p>Within a session, previously returned pages are deduplicated.</p>
+  <div class="section-label">How it works</div>
+
+  <div class="flow">
+    <div class="flow-node flow-hi">query</div>
+    <div class="flow-pipe"></div>
+    <div class="flow-split">
+      <div class="flow-node">title lookup<span>does this article exist?</span></div>
+      <div class="flow-node">fulltext search<span>what articles mention this?</span></div>
+    </div>
+    <div class="flow-pipe"></div>
+    <div class="flow-routes">
+      <div class="flow-route">
+        <div class="flow-tag">exact match</div>
+        <div class="flow-node flow-hi">single article<span>auto-detect relevant sections</span></div>
+      </div>
+      <div class="flow-route">
+        <div class="flow-tag">partial match</div>
+        <div class="flow-node flow-hi">single article<span>extra query words select sections</span></div>
+      </div>
+      <div class="flow-route">
+        <div class="flow-tag">no match</div>
+        <div class="flow-node">top 3 results<span>lead section + best matching section</span></div>
+      </div>
+    </div>
+    <div class="flow-pipe"></div>
+    <div class="flow-node">clean wikitext<span>strip markup, templates, refs, boilerplate</span></div>
+    <div class="flow-pipe"></div>
+    <div class="flow-node">truncate at sentence boundaries</div>
+    <div class="flow-pipe"></div>
+    <div class="flow-node">deduplicate across session</div>
+    <div class="flow-pipe"></div>
+    <div class="flow-node flow-hi">response &thinsp;~4K chars</div>
+  </div>
 
   <footer>
     <a href="https://github.com/SauersML/wikitool">source</a>

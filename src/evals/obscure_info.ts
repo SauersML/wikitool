@@ -6,6 +6,7 @@
 import {
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	extractFinalAnswer,
 	initLog,
 	matchesAny,
 	runAgentLoop,
@@ -207,10 +208,14 @@ export function judgeNumeric(response: string, expected: number, tolerancePct: n
 }
 
 export function judge(question: ObscureQuestion, response: string): boolean {
+	// Try to extract a final answer line first to avoid matching incidental mentions
+	const finalAnswer = extractFinalAnswer(response);
+	const textToJudge = finalAnswer ?? response;
+
 	if (question.judgeType === "numeric") {
-		return judgeNumeric(response, question.numericValue, question.tolerancePct);
+		return judgeNumeric(textToJudge, question.numericValue, question.tolerancePct);
 	}
-	return matchesAny(response, question.acceptableAnswers);
+	return matchesAny(textToJudge, question.acceptableAnswers);
 }
 
 // --- Main ---

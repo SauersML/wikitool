@@ -6,6 +6,7 @@
 import {
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	extractFinalAnswer,
 	gradeWithModel,
 	initLog,
 	runAgentLoop,
@@ -55,7 +56,23 @@ export const QUESTIONS: PrivateQuestion[] = parseTsv(tsvContent);
 // --- Judging ---
 
 export function judgeMultipleChoice(response: string, expectedAnswer: string): boolean {
-	// Check if the model's response contains the correct letter/answer as a standalone choice.
+	// Try extracting from an explicit ANSWER line first
+	const finalAnswer = extractFinalAnswer(response);
+	if (finalAnswer !== null) {
+		// For compound answers like "C, C, C, E, A", do exact string matching on extracted answer
+		if (expectedAnswer.includes(",")) {
+			return finalAnswer.includes(expectedAnswer);
+		}
+		// For single-letter answers, check the extracted answer
+		const escaped = expectedAnswer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const extractedPatterns = [
+			new RegExp(`^\\s*\\(?${escaped}\\)?\\s*$`, "i"),
+			new RegExp(`(?:^|[\\s(])${escaped}(?=$|[\\s.,;:!?)])`, "i"),
+		];
+		return extractedPatterns.some((p) => p.test(finalAnswer));
+	}
+
+	// Fall back to full-response matching
 	// For compound answers like "C, C, C, E, A", do exact string matching.
 	if (expectedAnswer.includes(",")) {
 		return response.includes(expectedAnswer);
@@ -68,24 +85,28 @@ export function judgeMultipleChoice(response: string, expectedAnswer: string): b
 }
 
 export function judgeExactMatch(response: string, expectedAnswer: string): boolean {
+	// Try to extract a final answer line first to avoid matching incidental mentions
+	const finalAnswer = extractFinalAnswer(response);
+	const textToJudge = finalAnswer ?? response;
+
 	// For complex answers with braces, brackets, or commas, do exact string matching
 	if (
 		expectedAnswer.includes("{") ||
 		expectedAnswer.includes("[") ||
 		expectedAnswer.includes(",")
 	) {
-		return response.includes(expectedAnswer);
+		return textToJudge.includes(expectedAnswer);
 	}
 
 	// For simple string answers, check containment (case-insensitive)
-	if (response.toLowerCase().includes(expectedAnswer.toLowerCase())) {
+	if (textToJudge.toLowerCase().includes(expectedAnswer.toLowerCase())) {
 		return true;
 	}
 
 	// For numeric answers, try parsing and comparing with tolerance
 	const expectedNum = Number.parseFloat(expectedAnswer);
 	if (!Number.isNaN(expectedNum)) {
-		const numMatches = response.match(/[\d,]+\.?\d*/g);
+		const numMatches = textToJudge.match(/[\d,]+\.?\d*/g);
 		if (numMatches) {
 			const numbers = numMatches
 				.map((m) => Number.parseFloat(m.replace(/,/g, "")))

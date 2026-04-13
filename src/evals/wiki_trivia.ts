@@ -7,6 +7,7 @@
 import {
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	extractFinalAnswer,
 	initLog,
 	matchesAny,
 	runAgentLoop,
@@ -240,7 +241,11 @@ export const QUESTIONS: TriviaQuestion[] = [
 // --- Judging ---
 
 export function judge(question: TriviaQuestion, response: string): boolean {
-	return matchesAny(response, question.acceptableAnswers);
+	// Try to extract a final answer line first to avoid matching incidental mentions
+	const finalAnswer = extractFinalAnswer(response);
+	const textToJudge = finalAnswer ?? response;
+
+	return matchesAny(textToJudge, question.acceptableAnswers);
 }
 
 // --- Main ---

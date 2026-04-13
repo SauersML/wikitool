@@ -131,55 +131,41 @@ export function preserveNumericTemplates(text: string): string {
 
 	// {{val|VALUE|u=UNIT}} → "VALUE UNIT"
 	// {{val|VALUE}} → "VALUE"
-	t = t.replace(
-		/\{\{val\|([^|{}]+)(?:\|[^{}]*)?\}\}/gi,
-		(_m, value: string) => {
-			const full = _m as string;
-			const unitMatch = full.match(/u=([^|{}]+)/i);
-			if (unitMatch?.[1]) return `${value.trim()} ${unitMatch[1].trim()}`;
-			return value.trim();
-		},
-	);
+	t = t.replace(/\{\{val\|([^|{}]+)(?:\|[^{}]*)?\}\}/gi, (_m, value: string) => {
+		const full = _m as string;
+		const unitMatch = full.match(/u=([^|{}]+)/i);
+		if (unitMatch?.[1]) return `${value.trim()} ${unitMatch[1].trim()}`;
+		return value.trim();
+	});
 
 	// {{formatnum:NUMBER}} → "NUMBER"
-	t = t.replace(
-		/\{\{formatnum:([^{}]+)\}\}/gi,
-		(_m, num: string) => num.trim(),
-	);
+	t = t.replace(/\{\{formatnum:([^{}]+)\}\}/gi, (_m, num: string) => num.trim());
 
 	// {{age|Y|M|D}} → calculate or keep as placeholder
-	t = t.replace(
-		/\{\{age\|(\d+)\|(\d+)\|(\d+)\}\}/gi,
-		(_m, y: string, mo: string, d: string) => {
-			const birth = new Date(Number(y), Number(mo) - 1, Number(d));
-			const now = new Date();
-			let age = now.getFullYear() - birth.getFullYear();
-			const monthDiff = now.getMonth() - birth.getMonth();
-			if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
-				age--;
-			}
-			return String(age);
-		},
-	);
+	t = t.replace(/\{\{age\|(\d+)\|(\d+)\|(\d+)\}\}/gi, (_m, y: string, mo: string, d: string) => {
+		const birth = new Date(Number(y), Number(mo) - 1, Number(d));
+		const now = new Date();
+		let age = now.getFullYear() - birth.getFullYear();
+		const monthDiff = now.getMonth() - birth.getMonth();
+		if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
+			age--;
+		}
+		return String(age);
+	});
 
 	// {{circa|YEAR}} → "c. YEAR"
-	t = t.replace(
-		/\{\{circa\|([^|{}]+)\}\}/gi,
-		(_m, year: string) => `c. ${year.trim()}`,
-	);
+	t = t.replace(/\{\{circa\|([^|{}]+)\}\}/gi, (_m, year: string) => `c. ${year.trim()}`);
 
 	// {{birth date|Y|M|D|...}} → "Y-M-D"  (also handles birth date and age)
 	t = t.replace(
 		/\{\{birth date(?:\s+and\s+age)?\|(\d+)\|(\d+)\|(\d+)(?:\|[^{}]*)?\}\}/gi,
-		(_m, y: string, mo: string, d: string) =>
-			`${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
+		(_m, y: string, mo: string, d: string) => `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
 	);
 
 	// {{death date|Y|M|D|...}} → "Y-M-D"  (also handles death date and age)
 	t = t.replace(
 		/\{\{death date(?:\s+and\s+age)?\|(\d+)\|(\d+)\|(\d+)(?:\|[^{}]*)?\}\}/gi,
-		(_m, y: string, mo: string, d: string) =>
-			`${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
+		(_m, y: string, mo: string, d: string) => `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`,
 	);
 
 	// {{coord|LAT|LON|...}} → "LAT, LON"

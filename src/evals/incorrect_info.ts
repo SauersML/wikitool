@@ -6,6 +6,7 @@ import {
 	type AgentResult,
 	DEFAULT_MODEL,
 	defaultToolHandler,
+	extractFinalAnswer,
 	initLog,
 	runAgentLoop,
 	writeTsvResults,
@@ -169,7 +170,11 @@ export function judgeAnswer(
 	incorrectValue: string,
 	mode: "without-tool" | "with-tool",
 ): boolean {
-	const lower = response.toLowerCase();
+	// Try to extract a final answer line first to avoid matching incidental mentions
+	const finalAnswer = extractFinalAnswer(response);
+	const textToJudge = finalAnswer ?? response;
+
+	const lower = textToJudge.toLowerCase();
 	const hasCorrect = lower.includes(correctAnswer.toLowerCase());
 	const hasIncorrect = lower.includes(incorrectValue.toLowerCase());
 

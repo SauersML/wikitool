@@ -218,9 +218,7 @@ export async function runAgentLoop(
 		// Case 2: last assistant message has no text blocks
 		(lastEntry?.role === "assistant" &&
 			Array.isArray(lastEntry.content) &&
-			!(lastEntry.content as Anthropic.Messages.ContentBlock[]).some(
-				(b) => b.type === "text",
-			));
+			!(lastEntry.content as Anthropic.Messages.ContentBlock[]).some((b) => b.type === "text"));
 	if (needsForce) {
 		const forceResponse = await client.messages.create({
 			model,
@@ -268,9 +266,11 @@ export async function runAgentLoop(
 
 // --- Model grading ---
 
+export const GRADER_MODEL = "claude-sonnet-4-6";
+
 export async function gradeWithModel(prompt: string, model?: string): Promise<string> {
 	const response = await client.messages.create({
-		model: model ?? DEFAULT_MODEL,
+		model: model ?? GRADER_MODEL,
 		max_tokens: 512,
 		messages: [{ role: "user", content: prompt }],
 	});
@@ -305,13 +305,13 @@ export function extractFinalAnswer(response: string): string | null {
 
 	for (const pattern of patterns) {
 		const global = new RegExp(pattern.source, `${pattern.flags}g`);
-		let match: RegExpExecArray | null;
-		while ((match = global.exec(response)) !== null) {
+		let match: RegExpExecArray | null = global.exec(response);
+		while (match !== null) {
 			if (match.index > lastIndex) {
 				lastIndex = match.index;
-				// Trim trailing whitespace and period from the extracted answer
 				lastMatch = match[1]!.trim();
 			}
+			match = global.exec(response);
 		}
 	}
 

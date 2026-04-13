@@ -47,7 +47,8 @@ export const QUESTIONS = [
 const SYSTEM_PROMPT =
 	"You are a helpful assistant with access to a Wikipedia search tool. " +
 	"Your training data has a cutoff, so for recent events you should search " +
-	"Wikipedia to get current information. Answer questions accurately.";
+	"Wikipedia to get current information. Answer questions accurately. " +
+	"End with ANSWER: followed by your answer.";
 
 // ---------------------------------------------------------------------------
 // Uncertainty detection
@@ -83,10 +84,13 @@ function toolResultsEmpty(toolCalls: { result: string }[]): boolean {
 
 async function gradeAnswered(question: string, answer: string): Promise<boolean> {
 	const prompt = [
-		"Does this response answer the question with specific factual information ",
-		'(not hedging or saying "I don\'t know")?\n',
+		"Does this response provide a specific, concrete answer to the question? ",
+		"Judge ONLY whether the response contains a definite answer (a name, date, score, etc.), ",
+		"NOT whether the answer is factually correct. ",
+		'A response that says "X won" or "it was held in Y" is answered=true even if you cannot verify the facts. ',
+		'A response that says "I don\'t know" or "I cannot confirm" is answered=false.\n\n',
 		`Question: ${question}\n`,
-		`Response: ${answer}\n`,
+		`Response: ${answer.slice(0, 500)}\n\n`,
 		'Respond ONLY with JSON: {"answered": true} or {"answered": false}',
 	].join("");
 

@@ -40,6 +40,8 @@ export interface AgentResult {
 	usedTool: boolean;
 	toolCalls: ToolCallRecord[];
 	messages: Anthropic.Messages.MessageParam[];
+	durationMs: number;
+	toolDurationMs: number;
 }
 
 export type ToolHandler = (
@@ -124,10 +126,12 @@ export async function runAgentLoop(
 		{ role: "user", content: opts.userMessage },
 	];
 
+	const startTime = performance.now();
 	let turns = 0;
 	let inputTokens = 0;
 	let outputTokens = 0;
 	let usedTool = false;
+	let toolDurationMs = 0;
 	const toolCalls: ToolCallRecord[] = [];
 
 	while (turns < maxTurns) {
@@ -176,9 +180,12 @@ export async function runAgentLoop(
 			usedTool = true;
 			const input = block.input as Record<string, unknown>;
 			let result: string;
+			const toolStart = performance.now();
 			try {
 				result = await handler(block.name, input);
+				toolDurationMs += performance.now() - toolStart;
 			} catch (err) {
+				toolDurationMs += performance.now() - toolStart;
 				result = `Error: ${err instanceof Error ? err.message : String(err)}`;
 				results.push({
 					type: "tool_result",
@@ -211,7 +218,8 @@ export async function runAgentLoop(
 		if (lastText) answer = lastText.text;
 	}
 
-	return { answer, turns, inputTokens, outputTokens, usedTool, toolCalls, messages };
+	const durationMs = performance.now() - startTime;
+	return { answer, turns, inputTokens, outputTokens, usedTool, toolCalls, messages, durationMs, toolDurationMs };
 }
 
 // --- Model grading ---

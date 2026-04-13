@@ -299,16 +299,14 @@ function extractLead(content: string): string {
 
 const MAX_LISTED_SECTIONS = 12;
 
-function leafSections(sections: PageSection[]): string[] {
-	const leaves: string[] = [];
-	for (const [i, current] of sections.entries()) {
-		if (BOILERPLATE.has(current.name.toLowerCase())) continue;
-		const next = sections[i + 1];
-		if (!next || next.level <= current.level) {
-			leaves.push(current.name);
-		}
+function topLevelSections(sections: PageSection[]): string[] {
+	const out: string[] = [];
+	for (const s of sections) {
+		if (s.level !== 2) continue;
+		if (BOILERPLATE.has(s.name.toLowerCase())) continue;
+		out.push(s.name);
 	}
-	return leaves;
+	return out;
 }
 
 function formatSections(leaves: string[]): string {
@@ -569,7 +567,7 @@ async function articleResult(
 ): Promise<string> {
 	const page = await getPageContent(title.title);
 	const content = parseWikitext(page.wikitext);
-	const leaves = leafSections(page.sections);
+	const leaves = topLevelSections(page.sections);
 	const isStub = content.length < 500;
 
 	// If we already returned this article, return a compact reference
@@ -646,7 +644,7 @@ async function searchResults(query: string, search: SearchResponse, seen?: SeenP
 		}
 
 		const parsed = parseWikitext(page.wikitext);
-		const leaves = leafSections(page.sections);
+		const leaves = topLevelSections(page.sections);
 		const secList = `${formatSections(leaves)}\n`;
 
 		let tag = `<page title="${x(hit.title)}"`;

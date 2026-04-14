@@ -206,9 +206,11 @@ const HTML = `<!DOCTYPE html>
   .msg { margin-bottom: 22px; }
   .msg.user {
     background: var(--user-tint);
-    border-left: 2px solid var(--accent);
     padding: 10px 14px;
-    border-radius: 0 3px 3px 0;
+    border-radius: 12px 12px 4px 12px;
+    max-width: 75%;
+    width: fit-content;
+    margin-left: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
   }

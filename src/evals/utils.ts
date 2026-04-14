@@ -134,7 +134,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 			const content = (msg as SDKAssistantMessageLike).message?.content;
 			if (Array.isArray(content)) {
 				for (const block of content) {
-					if (block.type === "tool_use") {
+					if (block.type === "tool_use" && typeof block.name === "string") {
 						usedTool = true;
 						toolCalls.push({
 							name: block.name,
@@ -142,7 +142,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 							result: "",
 						});
 					}
-					if (block.type === "text" && "text" in block) {
+					if (block.type === "text" && typeof block.text === "string") {
 						assistantTexts.push(block.text);
 					}
 				}

@@ -20,6 +20,13 @@
 		"exactOptionalPropertyTypes": true,
 		"noPropertyAccessFromIndexSignature": true
 	},
-	"include": ["src/index.ts", "src/tool", "src/site.ts", "*.ts", "worker-configuration.d.ts"],
-	"exclude": ["node_modules", "src/evals", "src/tests"]
+	"include": [
+		"src/index.ts",
+		"src/tool",
+		"src/site.ts",
+		"src/chat/types.d.ts",
+		"*.ts",
+		"worker-configuration.d.ts"
+	],
+	"exclude": ["node_modules", "src/evals", "src/tests", "src/chat/main.ts"]
 }

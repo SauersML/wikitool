@@ -66,7 +66,9 @@ describe("obscure_info eval", () => {
 
 		test("matches surname as standalone word", () => {
 			expect(matchesAny("It was named after Coleman.", ["Coleman"])).toBe(true);
-			expect(matchesAny("Johnny Coleman was the driver.", ["Johnny Coleman", "Coleman"])).toBe(true);
+			expect(matchesAny("Johnny Coleman was the driver.", ["Johnny Coleman", "Coleman"])).toBe(
+				true,
+			);
 		});
 	});
 

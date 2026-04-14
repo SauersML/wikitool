@@ -17,7 +17,7 @@ const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 4096;
 const MAX_TOOL_TURNS = 20;
 
-const KEY_VALID = /^sk-ant-api\d+-[A-Za-z0-9_\-]{10,}$/;
+const KEY_VALID = /^sk-ant-api\d+-[A-Za-z0-9_-]{10,}$/;
 const KEY_ADMIN = /^sk-ant-admin/;
 
 const TOOL: Tool = {
@@ -131,9 +131,9 @@ function renderEmpty() {
 	);
 	const examples = el("div", { class: "examples" });
 	for (const q of [
-		"Compare the flight envelopes of the SR-71 and the MiG-25.",
-		"What is hafnium's role in nuclear reactors?",
-		"Summarize the causes of the 2011 Tōhoku earthquake.",
+		"Who won the 2025 Nobel Prize in Literature, and what did the citation say?",
+		"List the five largest earthquakes ever recorded, with year and location.",
+		"What health risks are linked to asbestos exposure, and which diseases most strongly?",
 	]) {
 		const b = el("button", {}, q);
 		b.addEventListener("click", () => {
@@ -498,7 +498,7 @@ function renderError(
 }
 
 function clearErrorBanners() {
-	document.querySelectorAll(".error-banner").forEach((b) => b.remove());
+	for (const b of document.querySelectorAll(".error-banner")) b.remove();
 }
 
 function setStatus(text: string, tone: "" | "ok" | "err" = "") {
@@ -601,6 +601,16 @@ async function runOneTurn(
 	});
 
 	const final = await stream.finalMessage();
+
+	// Safety net: finalize any text blocks whose content_block_stop didn't land
+	// in time (or at all). finalizeTextBlock is idempotent — cursor is already
+	// gone after the first run, and re-rendering the same raw string produces
+	// the same DOM. Without this, plain-text streaming stays as-is and markdown
+	// like **bold** never gets transformed.
+	for (const block of blocks.values()) {
+		if (block.kind === "text") finalizeTextBlock(block);
+	}
+
 	setStatus("", "");
 	return final;
 }
@@ -635,53 +645,56 @@ async function runAgentLoop() {
 				return; // Normal end.
 			}
 
-			// Execute tool calls.
+			// Execute tool calls in parallel. The model can emit several tool_use
+			// blocks in one turn (e.g. "check both Einstein and Gödel"); running
+			// the Wikipedia requests concurrently cuts turn latency roughly by the
+			// number of calls.
 			const toolUses = final.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
-			const results: ToolResultBlockParam[] = [];
 
-			for (const tu of toolUses) {
-				const card = toolCardById.get(tu.id) ?? renderToolCard();
-
-				const input = (tu.input ?? {}) as { query?: string };
-				const query = (input.query || "").trim();
-				card.setQuery(query);
-
-				if (tu.name !== TOOL_NAME || !query) {
-					card.setState("error");
-					card.setResult(`Unknown tool or missing query: ${tu.name}`, true);
-					results.push({
-						type: "tool_result",
-						tool_use_id: tu.id,
-						content: "Error: invalid tool invocation.",
-						is_error: true,
-					});
-					continue;
-				}
-
-				card.setState("searching");
-				setStatus(`searching "${truncate(query, 40)}"`, "");
-
-				try {
-					const text = await searchWikipedia(query, state.seen);
-					card.setState("ok");
-					card.setResult(text, false);
-					results.push({
-						type: "tool_result",
-						tool_use_id: tu.id,
-						content: text,
-					});
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					card.setState("error");
-					card.setResult(`Wikipedia search failed: ${message}`, true);
-					results.push({
-						type: "tool_result",
-						tool_use_id: tu.id,
-						content: `Error: ${message}`,
-						is_error: true,
-					});
-				}
+			if (toolUses.length > 1) {
+				setStatus(`searching ${toolUses.length} queries in parallel`, "");
+			} else if (toolUses.length === 1) {
+				const q = (((toolUses[0].input ?? {}) as { query?: string }).query || "").trim();
+				setStatus(`searching "${truncate(q, 40)}"`, "");
 			}
+
+			const results: ToolResultBlockParam[] = await Promise.all(
+				toolUses.map(async (tu): Promise<ToolResultBlockParam> => {
+					const card = toolCardById.get(tu.id) ?? renderToolCard();
+					const input = (tu.input ?? {}) as { query?: string };
+					const query = (input.query || "").trim();
+					card.setQuery(query);
+
+					if (tu.name !== TOOL_NAME || !query) {
+						card.setState("error");
+						card.setResult(`Unknown tool or missing query: ${tu.name}`, true);
+						return {
+							type: "tool_result",
+							tool_use_id: tu.id,
+							content: "Error: invalid tool invocation.",
+							is_error: true,
+						};
+					}
+
+					card.setState("searching");
+					try {
+						const text = await searchWikipedia(query, state.seen);
+						card.setState("ok");
+						card.setResult(text, false);
+						return { type: "tool_result", tool_use_id: tu.id, content: text };
+					} catch (err) {
+						const message = err instanceof Error ? err.message : String(err);
+						card.setState("error");
+						card.setResult(`Wikipedia search failed: ${message}`, true);
+						return {
+							type: "tool_result",
+							tool_use_id: tu.id,
+							content: `Error: ${message}`,
+							is_error: true,
+						};
+					}
+				}),
+			);
 
 			// Compose the user message: tool_results + any turn-budget nudge.
 			// - On the turn BEFORE the last allowed tool turn, warn the model.
@@ -711,7 +724,7 @@ async function runAgentLoop() {
 		setStreamingUI(false);
 		setStatus("", "");
 		// Clean up any text blocks that are still open (e.g. on abort mid-stream).
-		document.querySelectorAll(".msg.assistant .cursor").forEach((c) => c.remove());
+		for (const c of document.querySelectorAll(".msg.assistant .cursor")) c.remove();
 	}
 }
 

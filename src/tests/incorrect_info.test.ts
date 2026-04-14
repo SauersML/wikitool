@@ -44,12 +44,7 @@ describe("incorrect_info eval", () => {
 
 		test("correct when answer contains only correctAnswer", async () => {
 			expect(
-				await judgeAnswer(
-					"The speed of light is 299,792,458 m/s.",
-					"299,792,458",
-					"299,792,448",
-					"without-tool",
-				),
+				await judgeAnswer("The speed of light is 299,792,458 m/s.", "299,792,458", "299,792,448"),
 			).toBe(true);
 		});
 
@@ -59,75 +54,45 @@ describe("incorrect_info eval", () => {
 					"The speed of light is approximately 300 million m/s.",
 					"299,792,458",
 					"299,792,448",
-					"without-tool",
 				),
 			).toBe(false);
 		});
 
 		test("incorrect when answer contains only incorrectValue", async () => {
-			expect(
-				await judgeAnswer("The half-life is 24,400 years.", "24,110", "24,400", "without-tool"),
-			).toBe(false);
+			expect(await judgeAnswer("The half-life is 24,400 years.", "24,110", "24,400")).toBe(false);
 		});
 
 		test("non-numeric case-insensitive matching", async () => {
-			expect(
-				await judgeAnswer("The answer is canberra.", "Canberra", "Sydney", "without-tool"),
-			).toBe(true);
+			expect(await judgeAnswer("The answer is canberra.", "Canberra", "Sydney")).toBe(true);
 		});
 
 		test("with-tool: correct when answer has correctAnswer and NOT incorrectValue", async () => {
-			expect(
-				await judgeAnswer(
-					"The capital of Australia is Canberra.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
-			).toBe(true);
+			expect(await judgeAnswer("The capital of Australia is Canberra.", "Canberra", "Sydney")).toBe(
+				true,
+			);
 		});
 
 		test("with-tool: incorrect when answer contains only incorrectValue", async () => {
-			expect(
-				await judgeAnswer(
-					"The capital of Australia is Sydney.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
-			).toBe(false);
+			expect(await judgeAnswer("The capital of Australia is Sydney.", "Canberra", "Sydney")).toBe(
+				false,
+			);
 		});
 
 		test("with-tool: incorrect when answer has neither correct nor incorrect", async () => {
 			expect(
-				await judgeAnswer(
-					"The capital of Australia is Melbourne.",
-					"Canberra",
-					"Sydney",
-					"with-tool",
-				),
+				await judgeAnswer("The capital of Australia is Melbourne.", "Canberra", "Sydney"),
 			).toBe(false);
 		});
 
 		test("with-tool: correct numeric value only", async () => {
 			expect(
-				await judgeAnswer(
-					"The density of osmium is 22.59 g/cm\u00B3.",
-					"22.59",
-					"22.87",
-					"with-tool",
-				),
+				await judgeAnswer("The density of osmium is 22.59 g/cm\u00B3.", "22.59", "22.87"),
 			).toBe(true);
 		});
 
 		test("with-tool: incorrect numeric value only", async () => {
 			expect(
-				await judgeAnswer(
-					"The density of osmium is 22.87 g/cm\u00B3.",
-					"22.59",
-					"22.87",
-					"with-tool",
-				),
+				await judgeAnswer("The density of osmium is 22.87 g/cm\u00B3.", "22.59", "22.87"),
 			).toBe(false);
 		});
 
@@ -139,7 +104,6 @@ describe("incorrect_info eval", () => {
 					"The Wikipedia article says Sydney, but that is incorrect. The actual capital of Australia is Canberra.",
 					"Canberra",
 					"Sydney",
-					"with-tool",
 				),
 			).toBe(true);
 		});
@@ -150,7 +114,6 @@ describe("incorrect_info eval", () => {
 					"I found 22.87 in the source, but this appears to be an error. The correct density of osmium is 22.59 g/cm\u00B3.",
 					"22.59",
 					"22.87",
-					"with-tool",
 				),
 			).toBe(true);
 		});
@@ -161,7 +124,6 @@ describe("incorrect_info eval", () => {
 					"Some sources say 24,400 but the accepted value is 24,110 years.",
 					"24,110",
 					"24,400",
-					"without-tool",
 				),
 			).toBe(true);
 		});

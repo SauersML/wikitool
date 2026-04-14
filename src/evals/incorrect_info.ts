@@ -168,7 +168,6 @@ export async function judgeAnswer(
 	response: string,
 	correctAnswer: string,
 	incorrectValue: string,
-	mode: "without-tool" | "with-tool",
 ): Promise<boolean> {
 	// Try to extract a final answer line first to avoid matching incidental mentions
 	const finalAnswer = extractFinalAnswer(response);
@@ -238,7 +237,6 @@ async function main() {
 			withoutResult.answer,
 			q.correctAnswer,
 			q.incorrectValue,
-			"without-tool",
 		);
 		if (withoutCorrect) correctWithout++;
 		totalTokens += withoutResult.inputTokens + withoutResult.outputTokens;
@@ -271,12 +269,7 @@ async function main() {
 			mcpServers: { wiki: wikiServer },
 			allowedTools: [WIKI_TOOL_NAME],
 		});
-		const withCorrect = await judgeAnswer(
-			withResult.answer,
-			q.correctAnswer,
-			q.incorrectValue,
-			"with-tool",
-		);
+		const withCorrect = await judgeAnswer(withResult.answer, q.correctAnswer, q.incorrectValue);
 		if (withCorrect) correctWith++;
 		totalTokens += withResult.inputTokens + withResult.outputTokens;
 

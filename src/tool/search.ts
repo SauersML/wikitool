@@ -574,7 +574,7 @@ function parseInfoboxContent(raw: string): string {
 		// Strip ref tags at end of value: [MSR], [b92], [wiki] etc.
 		// Runs after template truncation so refs are now at the end.
 		// Only strips trailing refs to preserve notation like [Xe] in electron configs.
-		val = val.replace(/(\s*\[[^\[\]]{1,50}\])+\s*$/g, "");
+		val = val.replace(/(\s*\[[^[\]]{1,50}\])+\s*$/g, "");
 		// Clean up excess whitespace
 		val = collapseWhitespace(val);
 		// Trim leading punctuation (from stripped templates)
@@ -929,7 +929,10 @@ function extractSection(wikitext: string, name: string, query?: string, cap = SE
 	let startIdx = -1;
 	if (query) {
 		const sectionWords = new Set(
-			normalizeDashes(name).toLowerCase().split(/[\s\-]+/).filter((w) => w.length > 1),
+			normalizeDashes(name)
+				.toLowerCase()
+				.split(/[\s-]+/)
+				.filter((w) => w.length > 1),
 		);
 		const terms = normalizeDashes(query)
 			.toLowerCase()
@@ -1073,7 +1076,11 @@ function detectSections(
 // --- XML helpers ---
 
 function x(s: string): string {
-	return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+	return s
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
 }
 
 function cdata(text: string): string {
@@ -1483,7 +1490,6 @@ async function searchResults(
 		if (!seen) return true;
 		return hasNovelContent(p, top[idx]!.title, seen);
 	});
-
 
 	let xml = `<result query="${x(query)}"`;
 	if (search.suggestion) xml += ` suggestion="${x(search.suggestion)}"`;

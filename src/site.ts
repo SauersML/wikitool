@@ -227,7 +227,7 @@ const HTML = `<!DOCTYPE html>
   .msg.assistant .body ul, .msg.assistant .body ol { padding-left: 22px; margin: 0 0 10px; }
   .msg.assistant .body li { margin: 2px 0; }
   .msg.assistant .body li > p { margin: 0 0 4px; }
-  .msg.assistant .body strong { color: var(--fg); font-weight: 500; }
+  .msg.assistant .body strong { color: var(--fg); font-weight: 700; }
   .msg.assistant .body em { font-style: italic; }
   .msg.assistant .body code {
     background: var(--code-bg);

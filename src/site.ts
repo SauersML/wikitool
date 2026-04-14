@@ -137,6 +137,15 @@ const HTML = `<!DOCTYPE html>
   }
   .hero .lead-row p { margin: 0; }
   .hero .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .hero .model-badge {
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 3px 10px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
   .hero .actions button {
     font-size: 11px;
     padding: 6px 10px;
@@ -264,7 +273,20 @@ const HTML = `<!DOCTYPE html>
     margin-left: 2px;
     animation: blink 1s steps(2) infinite;
   }
+  .msg.assistant .cursor.dim { background: var(--dim); }
   @keyframes blink { 50% { opacity: 0; } }
+
+  .msg.assistant.thinking-wrap { margin-bottom: 10px; }
+  .msg.assistant .thinking {
+    color: var(--dim);
+    font-style: italic;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    border-left: 2px solid var(--border);
+    padding: 2px 0 2px 10px;
+  }
 
   .tool {
     border: 1px solid var(--border);
@@ -612,6 +634,7 @@ const HTML = `<!DOCTYPE html>
     <div class="lead-row">
       <p class="lead">Wikipedia search for agents. Try it below &mdash; your API key stays in your browser.</p>
       <div class="actions">
+        <span class="model-badge" title="The chat uses Claude Haiku 4.5 with extended thinking">Claude Haiku 4.5</span>
         <span class="status" id="status"></span>
         <button id="new-chat" title="Start a new conversation">new chat</button>
         <button id="replace-key" title="Replace your API key">replace key</button>

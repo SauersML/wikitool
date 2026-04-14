@@ -14,8 +14,14 @@ import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/se
 
 const KEY_LS = "wikisearch.key";
 const MODEL = "claude-haiku-4-5-20251001";
-const MAX_TOKENS = 4096;
+// Haiku 4.5 caps a single response at 64k output tokens, and budget_tokens
+// must be strictly less than max_tokens — 64000 / 63999 is the practical
+// maximum. 200k context window still leaves room for system, tools, and
+// prior turns deep into a conversation.
+const MAX_TOKENS = 64000;
+const THINKING_BUDGET = 63999;
 const MAX_TOOL_TURNS = 20;
+const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 
 const KEY_VALID = /^sk-ant-api\d+-[A-Za-z0-9_-]{10,}$/;
 const KEY_ADMIN = /^sk-ant-admin/;
@@ -29,6 +35,44 @@ const TOOL: Tool = {
 		required: ["query"],
 	},
 };
+
+// Haiku 4.5 requires a cacheable prefix of ≥4096 tokens — `tools` + `system`
+// alone (~800 tokens) is below the floor, so a breakpoint on tool/system
+// never pays off. Instead we place a single sliding breakpoint on the last
+// block of the latest message: by the time a Wikipedia tool_result has
+// landed the prefix is comfortably over 4k, and every subsequent turn
+// reads the full tools+system+prior-turns prefix from cache. One breakpoint
+// is sufficient because reads hit on the longest cached prefix regardless
+// of where the current request's breakpoint sits.
+const CACHE_CONTROL_EPHEMERAL = { type: "ephemeral" } as const;
+
+/** Return a copy of `messages` with a single cache_control breakpoint on the
+ *  last content block of the last message. Does not mutate inputs so the UI
+ *  state (state.conversation) stays free of API-specific metadata. */
+function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
+	if (messages.length === 0) return messages;
+	const lastIdx = messages.length - 1;
+	const last = messages[lastIdx];
+	if (!last) return messages;
+	const content = last.content;
+
+	if (typeof content === "string") {
+		const block: TextBlockParam = {
+			type: "text",
+			text: content,
+			cache_control: CACHE_CONTROL_EPHEMERAL,
+		};
+		return [...messages.slice(0, lastIdx), { role: last.role, content: [block] }];
+	}
+
+	if (content.length === 0) return messages;
+	const blockIdx = content.length - 1;
+	const block = content[blockIdx];
+	if (!block) return messages;
+	const marked = { ...block, cache_control: CACHE_CONTROL_EPHEMERAL } as typeof block;
+	const newContent = [...content.slice(0, blockIdx), marked];
+	return [...messages.slice(0, lastIdx), { role: last.role, content: newContent }];
+}
 
 const LAST_TURN_WARNING =
 	"[System note: you have one more tool call available after this one. Use it only if strictly necessary — otherwise answer now based on what you have gathered.]";
@@ -161,13 +205,20 @@ function renderUserMessage(text: string) {
 }
 
 type TextBlock = { kind: "text"; node: HTMLElement; cursor: HTMLElement; raw: string };
+type ThinkingBlockState = {
+	kind: "thinking";
+	node: HTMLElement;
+	cursor: HTMLElement;
+	raw: string;
+	redacted: boolean;
+};
 type ToolBlockState = {
 	kind: "tool";
 	card: ToolCard;
 	jsonAccum: string;
 	serverToolUseId: string | null;
 };
-type BlockState = TextBlock | ToolBlockState;
+type BlockState = TextBlock | ThinkingBlockState | ToolBlockState;
 
 function createTextBlock(): TextBlock {
 	clearEmpty();
@@ -194,6 +245,31 @@ function finalizeTextBlock(block: TextBlock) {
 	}
 	block.node.classList.remove("streaming");
 	block.node.replaceChildren(renderMarkdown(block.raw));
+}
+
+function createThinkingBlock(redacted: boolean): ThinkingBlockState {
+	clearEmpty();
+	const node = el("div", { class: "msg assistant thinking-wrap" });
+	const body = el("div", { class: "thinking" });
+	const cursor = el("span", { class: "cursor dim" });
+	if (redacted) body.textContent = "[redacted thinking]";
+	node.append(body, cursor);
+	$("messages").append(node);
+	autoscroll(true);
+	return { kind: "thinking", node: body, cursor, raw: "", redacted };
+}
+
+function appendThinkingDelta(block: ThinkingBlockState, delta: string) {
+	block.raw += delta;
+	block.node.appendChild(document.createTextNode(delta));
+	autoscroll();
+}
+
+function finalizeThinkingBlock(block: ThinkingBlockState) {
+	block.cursor.remove();
+	if (!block.raw && !block.redacted) {
+		block.node.parentElement?.remove();
+	}
 }
 
 // ─── Minimal, safe markdown renderer ────────────────────────────────────────
@@ -585,10 +661,14 @@ async function runOneTurn(
 			model: MODEL,
 			max_tokens: MAX_TOKENS,
 			system: SYSTEM_PROMPT,
+			thinking: { type: "enabled", budget_tokens: THINKING_BUDGET },
 			...(includeTools ? { tools: [TOOL] } : {}),
-			messages: state.conversation,
+			messages: withCacheBreakpoint(state.conversation),
 		},
-		{ signal: state.abortController.signal },
+		{
+			signal: state.abortController.signal,
+			headers: { "anthropic-beta": INTERLEAVED_THINKING_BETA },
+		},
 	);
 
 	const blocks = new Map<number, BlockState>();
@@ -602,6 +682,10 @@ async function runOneTurn(
 			const cb = event.content_block;
 			if (cb.type === "text") {
 				blocks.set(event.index, createTextBlock());
+			} else if (cb.type === "thinking") {
+				blocks.set(event.index, createThinkingBlock(false));
+			} else if (cb.type === "redacted_thinking") {
+				blocks.set(event.index, createThinkingBlock(true));
 			} else if (cb.type === "tool_use") {
 				const card = renderToolCard();
 				toolCardById.set(cb.id, card);
@@ -617,14 +701,19 @@ async function runOneTurn(
 			if (!block) return;
 			if (block.kind === "text" && event.delta.type === "text_delta") {
 				appendTextDelta(block, event.delta.text);
+			} else if (block.kind === "thinking" && event.delta.type === "thinking_delta") {
+				appendThinkingDelta(block, event.delta.thinking);
 			} else if (block.kind === "tool" && event.delta.type === "input_json_delta") {
 				block.jsonAccum += event.delta.partial_json;
 				const partial = extractPartialQuery(block.jsonAccum);
 				if (partial !== null) block.card.setQuery(partial);
 			}
+			// signature_delta is consumed silently; the SDK records it on the
+			// finalMessage's ThinkingBlock, which we re-send verbatim next turn.
 		} else if (event.type === "content_block_stop") {
 			const block = blocks.get(event.index);
 			if (block?.kind === "text") finalizeTextBlock(block);
+			else if (block?.kind === "thinking") finalizeThinkingBlock(block);
 		}
 	});
 
@@ -637,6 +726,7 @@ async function runOneTurn(
 	// like **bold** never gets transformed.
 	for (const block of blocks.values()) {
 		if (block.kind === "text") finalizeTextBlock(block);
+		else if (block.kind === "thinking") finalizeThinkingBlock(block);
 	}
 
 	setStatus("", "");

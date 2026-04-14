@@ -748,6 +748,13 @@ function stripBoilerplateSections(text: string): string {
 	return out.join("\n");
 }
 
+/** Take the first N words of `text`; append "…" if any were dropped. */
+function firstWordsWithEllipsis(text: string, n: number): string {
+	const words = text.split(/\s+/);
+	const head = words.slice(0, n).join(" ");
+	return words.length > n ? `${head}…` : head;
+}
+
 function abbreviateRef(body: string): string {
 	// Try to extract author from {{cite ...}} template
 	const lastMatch = body.match(/\|\s*last\d?\s*=\s*([^|}\n]+)/i);
@@ -763,9 +770,7 @@ function abbreviateRef(body: string): string {
 	// Try to get title from cite template
 	const titleMatch = body.match(/\|\s*title\s*=\s*([^|}\n]+)/i);
 	if (titleMatch?.[1]) {
-		const title = titleMatch[1].trim();
-		const words = title.split(/\s+/).slice(0, 3).join(" ");
-		return `[${words}]`;
+		return `[${firstWordsWithEllipsis(titleMatch[1].trim(), 3)}]`;
 	}
 	// Plain text ref (not a template): take first few words
 	const plain = body
@@ -773,8 +778,8 @@ function abbreviateRef(body: string): string {
 		.replace(/<[^>]*>/g, "")
 		.trim();
 	if (plain.length > 0) {
-		const words = plain.split(/\s+/).slice(0, 3).join(" ");
-		if (words.length > 2) return `[${words}]`;
+		const abbrev = firstWordsWithEllipsis(plain, 3);
+		if (abbrev.length > 2) return `[${abbrev}]`;
 	}
 	// Nothing useful — strip entirely
 	return "";
@@ -1121,7 +1126,7 @@ function splitChunks(text: string): string[] {
  * Truncate text to fit within `limit` characters, cutting only at
  * paragraph or sentence boundaries. Always produces complete thoughts.
  */
-function truncate(text: string, limit: number): string {
+export function truncate(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const chunks = splitChunks(text);
 	let result = "";
@@ -1130,12 +1135,19 @@ function truncate(text: string, limit: number): string {
 		if (result.length + sep.length + chunk.length + 14 > limit) break;
 		result += sep + chunk;
 	}
-	// If we couldn't fit even one chunk, take as much of the first as possible
-	// cutting at a word boundary
+	// If we couldn't fit even one chunk, take as much of the first as possible.
+	// Prefer a sentence-ending boundary so the visible output never trails off
+	// mid-sentence; fall back to a word boundary only when no sentence ends in
+	// the window, and to the raw slice as a last resort.
 	if (!result && chunks[0]) {
 		const c = chunks[0].slice(0, limit - 14);
-		const lastSpace = c.lastIndexOf(" ");
-		result = lastSpace > 0 ? c.slice(0, lastSpace) : c;
+		const lastSentence = Math.max(c.lastIndexOf(". "), c.lastIndexOf("! "), c.lastIndexOf("? "));
+		if (lastSentence > 0) {
+			result = c.slice(0, lastSentence + 1);
+		} else {
+			const lastSpace = c.lastIndexOf(" ");
+			result = lastSpace > 0 ? c.slice(0, lastSpace) : c;
+		}
 	}
 	return `${result.trimEnd()}\n[truncated]`;
 }

@@ -6,6 +6,7 @@
 
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
@@ -256,7 +257,12 @@ export function judge(question: TriviaQuestion, response: string): boolean {
 
 // --- Main ---
 
-async function runQuestion(q: TriviaQuestion, index: number, mode: "with-tool" | "without-tool") {
+async function runQuestion(
+	q: TriviaQuestion,
+	index: number,
+	mode: "with-tool" | "without-tool",
+	log: (entry: unknown) => Promise<void>,
+) {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] = {
@@ -278,6 +284,17 @@ async function runQuestion(q: TriviaQuestion, index: number, mode: "with-tool" |
 
 	console.log(
 		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
+	);
+
+	await log(
+		buildRunLogEntry({
+			index,
+			mode,
+			question: q.question,
+			expected: q.acceptableAnswers,
+			agentResult: result,
+			verdict: { correct: isCorrect, canonical_expected: q.answer, topic: q.topic },
+		}),
 	);
 
 	return {
@@ -314,7 +331,15 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { path: logPath } = await initLog("wiki_trivia");
+	const { log, path: logPath } = await initLog("wiki_trivia");
+	await log({
+		event: "start",
+		eval: "wiki_trivia",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex ?? null,
+	});
 
 	const headers = [
 		"question",
@@ -334,7 +359,7 @@ async function main() {
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode);
+			const result = await runQuestion(q, i, mode, log);
 			rows.push([
 				result.question,
 				result.expectedAnswer,
@@ -373,6 +398,14 @@ async function main() {
 		withoutToolRows.map((r) => (r[7] === "true" ? 1 : 0)),
 	);
 	console.log(`  Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
+
+	await log({
+		event: "summary",
+		eval: "wiki_trivia",
+		with_tool: { correct: correctWith, total: withToolRows.length },
+		without_tool: { correct: correctWithout, total: withoutToolRows.length },
+		permutation: perm,
+	});
 
 	// Per-question table
 	console.log(`\n  ${"Question".padEnd(65)} ${"Topic".padEnd(18)} ${"With".padEnd(7)} Without`);

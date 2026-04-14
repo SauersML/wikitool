@@ -67,6 +67,11 @@ export interface AgentResult {
 	turns: number;
 	inputTokens: number;
 	outputTokens: number;
+	/** Tokens read from the prompt cache (90% cheaper than fresh input). */
+	cacheReadTokens: number;
+	/** Tokens written to the prompt cache this call (25% premium at 5m TTL,
+	 *  100% premium at 1h TTL). Agent SDK defaults to 1h. */
+	cacheCreationTokens: number;
 	usedTool: boolean;
 	toolCalls: ToolCallRecord[];
 	/** All text blocks from assistant messages (for code extraction in impl_bench). */
@@ -188,6 +193,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 					turns: r.num_turns ?? 0,
 					inputTokens: r.usage?.input_tokens ?? 0,
 					outputTokens: r.usage?.output_tokens ?? 0,
+					cacheReadTokens: r.usage?.cache_read_input_tokens ?? 0,
+					cacheCreationTokens: r.usage?.cache_creation_input_tokens ?? 0,
 					usedTool,
 					toolCalls,
 					assistantTexts,
@@ -229,7 +236,12 @@ interface SDKResultLike {
 	num_turns?: number;
 	duration_ms?: number;
 	total_cost_usd?: number;
-	usage?: { input_tokens: number; output_tokens: number };
+	usage?: {
+		input_tokens: number;
+		output_tokens: number;
+		cache_read_input_tokens?: number;
+		cache_creation_input_tokens?: number;
+	};
 }
 
 export { createSeenContent, type SeenContent };
@@ -253,6 +265,51 @@ export async function initLog(
 		await appendFile(path, `${JSON.stringify(entry)}\n`, "utf-8");
 	};
 	return { log, path };
+}
+
+/**
+ * Build a rich per-run JSON entry for logging. Captures the full question,
+ * expected answer, model answer, every tool call with its query AND result,
+ * token usage, duration, and cost — enough to reconstruct the run later
+ * without re-querying the model.
+ */
+export function buildRunLogEntry(opts: {
+	index: number;
+	mode?: string;
+	question: string;
+	expected?: string | string[] | number;
+	agentResult: AgentResult;
+	verdict?: Record<string, unknown>;
+	extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+	return {
+		event: "run",
+		timestamp: new Date().toISOString(),
+		index: opts.index,
+		...(opts.mode !== undefined ? { mode: opts.mode } : {}),
+		question: opts.question,
+		...(opts.expected !== undefined ? { expected: opts.expected } : {}),
+		model_answer: opts.agentResult.answer,
+		assistant_texts: opts.agentResult.assistantTexts,
+		tool_calls: opts.agentResult.toolCalls.map((tc) => ({
+			id: tc.toolUseId,
+			name: tc.name,
+			input: tc.input,
+			result: tc.result,
+			is_error: tc.isError ?? false,
+		})),
+		used_tool: opts.agentResult.usedTool,
+		turns: opts.agentResult.turns,
+		input_tokens: opts.agentResult.inputTokens,
+		output_tokens: opts.agentResult.outputTokens,
+		cache_read_tokens: opts.agentResult.cacheReadTokens,
+		cache_creation_tokens: opts.agentResult.cacheCreationTokens,
+		duration_ms: opts.agentResult.durationMs,
+		cost_usd: opts.agentResult.costUsd,
+		session_id: opts.agentResult.sessionId,
+		...(opts.verdict ? { verdict: opts.verdict } : {}),
+		...(opts.extra ?? {}),
+	};
 }
 
 // --- TSV helpers ---

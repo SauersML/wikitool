@@ -5,6 +5,7 @@
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
@@ -88,7 +89,15 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	await initLog("unnecessary_tool");
+	const { log } = await initLog("unnecessary_tool");
+	await log({
+		event: "start",
+		eval: "unnecessary_tool",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex,
+	});
 	const rows: string[][] = [];
 
 	let withToolUsedCount = 0;
@@ -132,6 +141,17 @@ async function main() {
 		console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
 		console.log(`  [with-tool] correct: ${withCorrect}`);
 
+		await log(
+			buildRunLogEntry({
+				index: idx,
+				mode: "with-tool",
+				question: q.question,
+				expected: q.acceptableAnswers,
+				agentResult: withResult,
+				verdict: { correct: withCorrect, used_tool: withResult.usedTool },
+			}),
+		);
+
 		rows.push([
 			q.question,
 			q.acceptableAnswers.join(", "),
@@ -161,6 +181,17 @@ async function main() {
 		console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
 		console.log(`  [without-tool] correct: ${withoutCorrect}`);
 		console.log();
+
+		await log(
+			buildRunLogEntry({
+				index: idx,
+				mode: "without-tool",
+				question: q.question,
+				expected: q.acceptableAnswers,
+				agentResult: withoutResult,
+				verdict: { correct: withoutCorrect },
+			}),
+		);
 
 		rows.push([
 			q.question,
@@ -218,6 +249,19 @@ async function main() {
 		.map((r) => (r[6] === "true" ? 1 : 0));
 	const perm = pairedPermutationTest(withCorr, withoutCorr);
 	console.log(`Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
+
+	await log({
+		event: "summary",
+		eval: "unnecessary_tool",
+		n_questions: totalQuestions,
+		with_tool_used: withToolUsedCount,
+		with_tool_correct: withToolCorrect,
+		without_tool_correct: withoutToolCorrect,
+		mean_with_tokens: meanWithTokens,
+		mean_without_tokens: meanWithoutTokens,
+		total_tokens: totalTokens,
+		permutation: perm,
+	});
 }
 
 main();

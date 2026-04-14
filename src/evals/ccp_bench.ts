@@ -6,6 +6,7 @@
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
+	buildRunLogEntry,
 	computeCohensD,
 	createSeenContent,
 	createWikiMcpServer,
@@ -752,7 +753,15 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	const { path: logPath } = await initLog("ccp_bench");
+	const { log, path: logPath } = await initLog("ccp_bench");
+	await log({
+		event: "start",
+		eval: "ccp_bench",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		conditions: ["control", "treatment"],
+		single_index: singleIndex,
+	});
 	const rows: string[][] = [];
 
 	const controlScores: number[] = [];
@@ -785,6 +794,26 @@ async function main() {
 		const controlScore = extractScore(controlTurn2.answer);
 		console.log(
 			`  [control] score: ${controlScore ?? "INVALID"} (raw: "${controlTurn2.answer.slice(0, 80)}")`,
+		);
+
+		await log(
+			buildRunLogEntry({
+				index: i,
+				mode: "control-turn1",
+				question: q.turn1,
+				agentResult: controlTurn1,
+				extra: { topic: q.topic, question_id: q.id },
+			}),
+		);
+		await log(
+			buildRunLogEntry({
+				index: i,
+				mode: "control-turn2",
+				question: q.turn2,
+				agentResult: controlTurn2,
+				verdict: { score: controlScore, raw: controlTurn2.answer },
+				extra: { topic: q.topic, question_id: q.id },
+			}),
 		);
 
 		rows.push([
@@ -827,6 +856,26 @@ async function main() {
 			`  [treatment] used tool: ${treatmentTurn1.usedTool}, tool calls: ${treatmentTurn1.toolCalls.length}`,
 		);
 		console.log();
+
+		await log(
+			buildRunLogEntry({
+				index: i,
+				mode: "treatment-turn1",
+				question: q.turn1,
+				agentResult: treatmentTurn1,
+				extra: { topic: q.topic, question_id: q.id },
+			}),
+		);
+		await log(
+			buildRunLogEntry({
+				index: i,
+				mode: "treatment-turn2",
+				question: q.turn2,
+				agentResult: treatmentTurn2,
+				verdict: { score: treatmentScore, raw: treatmentTurn2.answer },
+				extra: { topic: q.topic, question_id: q.id },
+			}),
+		);
 
 		rows.push([
 			String(q.id),
@@ -883,12 +932,26 @@ async function main() {
 			`Treatment: mean=${mean(treatmentScores).toFixed(1)}, SD=${sd(treatmentScores).toFixed(1)}, n=${treatmentScores.length}`,
 		);
 	}
+	let cohensD: number | null = null;
+	let permResult: { diff: number; p: number } | null = null;
 	if (controlScores.length > 1 && treatmentScores.length > 1) {
-		const d = computeCohensD(controlScores, treatmentScores);
-		console.log(`Cohen's d: ${d.toFixed(3)}`);
-		const perm = pairedPermutationTest(treatmentScores, controlScores);
-		console.log(`Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
+		cohensD = computeCohensD(controlScores, treatmentScores);
+		console.log(`Cohen's d: ${cohensD.toFixed(3)}`);
+		permResult = pairedPermutationTest(treatmentScores, controlScores);
+		console.log(`Permutation test: diff=${permResult.diff.toFixed(3)}, p=${permResult.p.toFixed(4)}`);
 	}
+
+	await log({
+		event: "summary",
+		eval: "ccp_bench",
+		control_scores: controlScores,
+		treatment_scores: treatmentScores,
+		control_n: controlScores.length,
+		treatment_n: treatmentScores.length,
+		cohens_d: cohensD,
+		permutation: permResult,
+		topic_results: topicResults,
+	});
 
 	// Per-topic shift table
 	console.log(`\n  ${"Topic".padEnd(35)} ${"Control".padEnd(10)} ${"Treatment".padEnd(10)} Shift`);

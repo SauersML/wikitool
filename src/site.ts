@@ -1,3 +1,5 @@
+import { TOOL_NAME } from "./tool/prompt";
+
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,7 +7,7 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>WikiSearch MCP</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="%230a0a0a" rx="8"/><text x="32" y="49" text-anchor="middle" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="44" font-weight="700" fill="%23c4b5a0" letter-spacing="-2">WS</text></svg>'>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -136,18 +138,15 @@ const HTML = `<!DOCTYPE html>
   .hero .lead-row p { margin: 0; }
   .hero .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .hero .actions button {
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 11px;
     padding: 6px 10px;
     color: var(--dim);
   }
   .hero .status {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
     color: var(--dim);
     padding-right: 8px;
+    font-style: italic;
   }
   .hero .status.ok { color: var(--ok); }
   .hero .status.err { color: var(--danger); }
@@ -214,9 +213,45 @@ const HTML = `<!DOCTYPE html>
     word-wrap: break-word;
   }
   .msg.assistant .body {
-    white-space: pre-wrap;
     word-wrap: break-word;
     line-height: 1.7;
+  }
+  .msg.assistant .body.streaming { white-space: pre-wrap; }
+  .msg.assistant .body { color: var(--fg); }
+  .msg.assistant .body p { color: var(--fg); margin: 0 0 10px; font-size: 13px; }
+  .msg.assistant .body p:last-child { margin-bottom: 0; }
+  .msg.assistant .body li { color: var(--fg); font-size: 13px; }
+  .msg.assistant .body h3 { font-size: 14px; font-weight: 500; color: var(--accent); margin: 16px 0 6px; }
+  .msg.assistant .body h4 { font-size: 13px; font-weight: 500; color: var(--accent); margin: 14px 0 4px; }
+  .msg.assistant .body h5, .msg.assistant .body h6 { font-size: 12px; font-weight: 500; color: var(--accent); margin: 12px 0 4px; }
+  .msg.assistant .body ul, .msg.assistant .body ol { padding-left: 22px; margin: 0 0 10px; }
+  .msg.assistant .body li { margin: 2px 0; }
+  .msg.assistant .body li > p { margin: 0 0 4px; }
+  .msg.assistant .body strong { color: var(--fg); font-weight: 500; }
+  .msg.assistant .body em { font-style: italic; }
+  .msg.assistant .body code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 2px;
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .msg.assistant .body pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    border-radius: 3px;
+    overflow-x: auto;
+    margin: 10px 0;
+  }
+  .msg.assistant .body pre code { background: none; padding: 0; color: var(--fg); font-size: 12px; }
+  .msg.assistant .body a { color: var(--accent); border-bottom: 1px solid var(--border); word-break: break-word; }
+  .msg.assistant .body a:hover { border-color: var(--accent); }
+  .msg.assistant .body blockquote {
+    border-left: 2px solid var(--border);
+    padding-left: 12px;
+    color: var(--dim);
+    margin: 0 0 10px;
   }
   .msg.assistant .cursor {
     display: inline-block;
@@ -258,10 +293,9 @@ const HTML = `<!DOCTYPE html>
     font-style: italic;
   }
   .tool .tool-head .state {
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 11px;
     flex-shrink: 0;
+    font-style: italic;
   }
   .tool .tool-head .state.running { color: var(--accent); }
   .tool .tool-head .state.ok { color: var(--ok); }
@@ -289,6 +323,28 @@ const HTML = `<!DOCTYPE html>
   .tool.open .tool-body { display: block; }
   .tool .tool-body.error { color: var(--danger); }
 
+  @keyframes pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+  .tool.running .tool-head .state.running .dots,
+  .tool.running .tool-head .state.searching {
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .tool-head .state .dots { letter-spacing: 0.2em; font-size: 8px; }
+  .tool-head .state.searching { color: var(--accent); }
+  .tool-head .state .detail { color: var(--dim); margin-left: 8px; font-style: italic; }
+
+  .hero .status:not(:empty)::after {
+    content: "●";
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 9px;
+    animation: pulse 1.4s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  .hero .status.ok::after { display: none; }
+
   .error-banner {
     border: 1px solid var(--danger);
     border-radius: 3px;
@@ -302,16 +358,53 @@ const HTML = `<!DOCTYPE html>
     gap: 12px;
   }
   .error-banner span { flex: 1; min-width: 0; word-wrap: break-word; }
-  .error-banner .actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .error-banner .actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
   .error-banner button {
     border-color: var(--danger);
     color: var(--danger);
     padding: 4px 10px;
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 11px;
   }
   .error-banner button:hover { background: var(--danger); color: var(--bg); border-color: var(--danger); }
+  .error-banner .dismiss {
+    border: none;
+    background: none;
+    font-size: 18px;
+    padding: 0 6px;
+    line-height: 1;
+    color: inherit;
+    letter-spacing: 0;
+  }
+  .error-banner .dismiss:hover {
+    background: none;
+    border: none;
+    color: var(--fg);
+  }
+
+  /* Soft-error banners (auth, network, rate-limit, overloaded) — recoverable,
+     so they use the accent color instead of the hard-error red. */
+  .error-banner.auth,
+  .error-banner.network,
+  .error-banner.rate_limit,
+  .error-banner.overloaded {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .error-banner.auth button:not(.dismiss),
+  .error-banner.network button:not(.dismiss),
+  .error-banner.rate_limit button:not(.dismiss),
+  .error-banner.overloaded button:not(.dismiss) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .error-banner.auth button:not(.dismiss):hover,
+  .error-banner.network button:not(.dismiss):hover,
+  .error-banner.rate_limit button:not(.dismiss):hover,
+  .error-banner.overloaded button:not(.dismiss):hover {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
 
   .chat-composer {
     flex-shrink: 0;
@@ -331,22 +424,18 @@ const HTML = `<!DOCTYPE html>
     overflow-y: auto;
   }
   .chat-composer button.send {
-    padding: 10px 16px;
+    padding: 10px 18px;
     border-color: var(--accent);
     color: var(--accent);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 12px;
     flex-shrink: 0;
   }
   .chat-composer button.send:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
   .chat-composer button.stop {
-    padding: 10px 16px;
+    padding: 10px 18px;
     border-color: var(--danger);
     color: var(--danger);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 12px;
     flex-shrink: 0;
   }
   .chat-composer button.stop:hover { background: var(--danger); color: var(--bg); border-color: var(--danger); }
@@ -381,20 +470,16 @@ const HTML = `<!DOCTYPE html>
     overflow-y: auto;
   }
   .modal h2 {
-    font-size: 12px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 14px;
     color: var(--accent);
     margin-bottom: 20px;
-    font-weight: 400;
+    font-weight: 500;
   }
   .modal p { font-size: 12px; color: var(--dim); margin-bottom: 14px; line-height: 1.65; }
   .modal .field { margin-bottom: 16px; }
   .modal label {
     display: block;
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+    font-size: 11px;
     color: var(--dim);
     margin-bottom: 6px;
   }
@@ -500,12 +585,11 @@ const HTML = `<!DOCTYPE html>
   .eval-card h3 { font-size: 13px; font-weight: 500; color: var(--accent); margin-bottom: 6px; }
   .eval-card p { font-size: 12px; color: var(--dim); margin-bottom: 0; line-height: 1.5; }
   .eval-card .eval-meta {
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
     color: var(--dim);
     margin-top: 8px;
-    opacity: 0.7;
+    opacity: 0.8;
+    font-style: italic;
   }
 
   footer { margin-top: 64px; font-size: 11px; color: var(--dim); }
@@ -527,8 +611,9 @@ const HTML = `<!DOCTYPE html>
       <p class="lead">Wikipedia search for agents. Try it below &mdash; your API key stays in your browser.</p>
       <div class="actions">
         <span class="status" id="status"></span>
-        <button id="new-chat" title="Start a new conversation">new</button>
-        <button id="settings-btn">settings</button>
+        <button id="new-chat" title="Start a new conversation">new chat</button>
+        <button id="replace-key" title="Replace your API key">replace key</button>
+        <button id="forget-key" title="Remove your API key from this browser">forget key</button>
       </div>
     </div>
 
@@ -539,7 +624,7 @@ const HTML = `<!DOCTYPE html>
           <textarea id="input" placeholder="Ask anything…" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
           <button type="submit" class="send" id="send-btn">send</button>
         </form>
-        <div class="hint">enter to send · shift+enter for newline · your key, your Anthropic bill</div>
+        <div class="hint">enter to send · shift+enter for newline</div>
       </div>
     </div>
   </section>
@@ -570,7 +655,7 @@ claude mcp add wikisearch \\
   <section id="usage">
     <div class="section-label">Usage</div>
 
-    <p>One tool: <code>search_wikipedia</code></p>
+    <p>One tool: <code>${TOOL_NAME}</code></p>
 
     <p>Pass article titles, topics, or descriptive phrases. Section matching is automatic &mdash; include keywords to target specific sections.</p>
 
@@ -703,7 +788,7 @@ claude mcp add wikisearch \\
 <div class="modal-backdrop" id="key-modal" hidden>
   <div class="modal">
     <h2>Anthropic API key</h2>
-    <p>This chat runs entirely in your browser. Your key is stored only on this device and sent directly to <code>api.anthropic.com</code> and <code>en.wikipedia.org</code>. Nothing passes through our server.</p>
+    <p>This chat runs entirely in your browser. Your key is stored only on this device and sent directly to <code>api.anthropic.com</code> — never to our server. Search queries go straight from your browser to <code>en.wikipedia.org</code>.</p>
     <div class="field">
       <label for="key-input">API key</label>
       <input type="password" id="key-input" placeholder="sk-ant-api03-…" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -721,34 +806,6 @@ claude mcp add wikisearch \\
   </div>
 </div>
 
-<!-- Settings modal -->
-<div class="modal-backdrop" id="settings-modal" hidden>
-  <div class="modal">
-    <h2>Settings</h2>
-
-    <div class="field">
-      <label>API key</label>
-      <div class="fingerprint" id="key-fp"></div>
-      <div class="row left" style="margin-top:8px;">
-        <button id="key-replace">replace</button>
-        <button class="danger" id="key-forget">forget</button>
-      </div>
-    </div>
-
-    <div class="field">
-      <label>Model</label>
-      <div class="fingerprint">Haiku 4.5</div>
-      <p class="note" style="margin-top:6px;">The chat uses Haiku 4.5 &mdash; the same model the landing-page evals are run against.</p>
-    </div>
-
-    <p class="note"><strong>How your data is handled:</strong> messages go from your browser directly to Anthropic; search queries go from your browser directly to Wikipedia; nothing is logged or stored on our side. Anyone with read access to this browser profile can read your key from storage.</p>
-
-    <div class="row">
-      <button class="primary" id="settings-close">done</button>
-    </div>
-  </div>
-</div>
-
 <script type="module" src="/chat.js"></script>
 </body>
 </html>`;
@@ -762,7 +819,7 @@ export function serveLanding(): Response {
 				"script-src 'self'",
 				"style-src 'unsafe-inline'",
 				"connect-src https://api.anthropic.com https://en.wikipedia.org",
-				"img-src 'none'",
+				"img-src data:",
 				"font-src 'none'",
 				"frame-ancestors 'none'",
 				"base-uri 'none'",

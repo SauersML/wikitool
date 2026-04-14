@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { TOOL_DESCRIPTION } from "../tool/prompt";
+import { TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
 import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/search";
 
 // --- Constants ---
@@ -26,7 +26,7 @@ export function createWikiMcpServer(opts?: WikiMcpOptions) {
 	const transform = opts?.transform;
 
 	const wikiTool = tool(
-		"search_wikipedia",
+		TOOL_NAME,
 		TOOL_DESCRIPTION,
 		{ query: z.string() },
 		async (args) => {
@@ -40,7 +40,7 @@ export function createWikiMcpServer(opts?: WikiMcpOptions) {
 	return createSdkMcpServer({ name: "wiki", tools: [wikiTool] });
 }
 
-export const WIKI_TOOL_NAME = "mcp__wiki__search_wikipedia";
+export const WIKI_TOOL_NAME = `mcp__wiki__${TOOL_NAME}`;
 
 /**
  * External MCP servers (claude.ai proxy) leak into Agent SDK processes via the
@@ -113,7 +113,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 			systemPrompt: opts.system,
 			maxTurns: opts.maxTurns ?? 15,
 			tools: opts.builtinTools ?? [],
-			mcpServers: (opts.mcpServers ?? {}) as Record<string, import("@anthropic-ai/claude-agent-sdk").McpServerConfig>,
+			mcpServers: (opts.mcpServers ?? {}) as Record<
+				string,
+				import("@anthropic-ai/claude-agent-sdk").McpServerConfig
+			>,
 			allowedTools: opts.allowedTools ?? [],
 			disallowedTools: opts.disallowedTools ?? INHERITED_MCP_TOOLS,
 			permissionMode: "bypassPermissions",
@@ -213,7 +216,11 @@ export async function initLog(
 
 /** Sanitize a string for safe embedding in a TSV cell (no tabs, no newlines). */
 export function sanitizeTsvField(s: string): string {
-	return s.replaceAll("\r\n", " ").replaceAll("\r", " ").replaceAll("\n", " ").replaceAll("\t", " ");
+	return s
+		.replaceAll("\r\n", " ")
+		.replaceAll("\r", " ")
+		.replaceAll("\n", " ")
+		.replaceAll("\t", " ");
 }
 
 /**
@@ -252,7 +259,9 @@ export async function gradeWithModel(prompt: string, model?: string): Promise<st
 	const result = await runAgent({
 		prompt,
 		model: model ?? GRADER_MODEL,
-		maxTurns: 1,
+		mcpServers: { wiki: createWikiMcpServer() },
+		allowedTools: [WIKI_TOOL_NAME],
+		maxTurns: 10,
 	});
 	return result.answer;
 }
@@ -405,9 +414,19 @@ export function leadingLetterIs(text: string, expected: string): boolean {
 	if (ch.toUpperCase() !== expected.toUpperCase()) return false;
 	// Verify it's a standalone letter, not start of a word
 	const next = trimmed[i + 1];
-	if (next === undefined || next === ")" || next === "." || next === "," ||
-		next === ";" || next === ":" || next === "!" || next === "?" ||
-		next === " " || next === "\t" || next === "\n") {
+	if (
+		next === undefined ||
+		next === ")" ||
+		next === "." ||
+		next === "," ||
+		next === ";" ||
+		next === ":" ||
+		next === "!" ||
+		next === "?" ||
+		next === " " ||
+		next === "\t" ||
+		next === "\n"
+	) {
 		return true;
 	}
 	return false;
@@ -429,17 +448,9 @@ export function textContainsAnswerLetter(text: string, letter: string): boolean 
 
 	// **X** or *X*
 	if (text.includes(`**${upper}**`) || text.includes(`**${lower}**`)) return true;
-	if (
-		text.includes(`*${upper}*`) &&
-		!text.includes(`**${upper}*`) &&
-		!text.includes(`*${upper}**`)
-	)
+	if (text.includes(`*${upper}*`) && !text.includes(`**${upper}*`) && !text.includes(`*${upper}**`))
 		return true;
-	if (
-		text.includes(`*${lower}*`) &&
-		!text.includes(`**${lower}*`) &&
-		!text.includes(`*${lower}**`)
-	)
+	if (text.includes(`*${lower}*`) && !text.includes(`**${lower}*`) && !text.includes(`*${lower}**`))
 		return true;
 
 	const textLower = text.toLowerCase();

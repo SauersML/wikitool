@@ -3,6 +3,7 @@
 // Questions are loaded from datasets/QA bench - Private questions.tsv
 // Usage: bun src/evals/qa_private.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	createSeenContent,
 	createWikiMcpServer,
@@ -34,9 +35,8 @@ export interface PrivateQuestion {
 
 // --- System prompt ---
 
-export const SYSTEM_PROMPT = `You are a helpful assistant taking a challenging exam. You have access to a Wikipedia search tool — use it when you think it would help.
-
-Think step by step before answering. Show your reasoning.
+// Eval-specific task prompt (exam framing + answer format only).
+const TASK_PROMPT = `This is a challenging exam question. Think step by step before answering. Show your reasoning.
 
 YOUR FINAL LINE must be exactly:
 ANSWER: <your answer>
@@ -45,6 +45,9 @@ For multiple choice, give ONLY the letter: ANSWER: B
 For exact match, give the precise value: ANSWER: 42
 
 Do not write anything after the ANSWER line.`;
+
+export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // --- Load questions from TSV ---
 
@@ -191,11 +194,7 @@ export function judge(question: PrivateQuestion, response: string): boolean {
 
 // --- Main ---
 
-async function runQuestion(
-	q: PrivateQuestion,
-	index: number,
-	mode: "with-tool" | "without-tool",
-) {
+async function runQuestion(q: PrivateQuestion, index: number, mode: "with-tool" | "without-tool") {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] =
@@ -207,7 +206,7 @@ async function runQuestion(
 					allowedTools: [WIKI_TOOL_NAME],
 				}
 			: {
-					system: SYSTEM_PROMPT,
+					system: NO_TOOL_SYSTEM_PROMPT,
 					prompt: q.question,
 				};
 

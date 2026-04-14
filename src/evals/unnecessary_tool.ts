@@ -2,6 +2,7 @@
 // Tests whether the model wastes tokens calling Wikipedia for questions it obviously knows.
 // Usage: bun src/evals/unnecessary_tool.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
 	createSeenContent,
@@ -24,11 +25,13 @@ export interface UnnecessaryToolQuestion {
 
 // --- Constants ---
 
-export const SYSTEM_PROMPT =
-	"You are a helpful assistant. Answer questions directly and efficiently. " +
-	"You have access to a Wikipedia search tool, but you should only use it " +
-	"when you genuinely need to look something up. For common knowledge questions, " +
-	"just answer directly.";
+// Eval-specific task prompt (minimal — no tool guidance).
+const TASK_PROMPT = "";
+
+export const SYSTEM_PROMPT = TASK_PROMPT
+	? `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`
+	: SHARED_SYSTEM_PROMPT;
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 export const QUESTIONS: UnnecessaryToolQuestion[] = [
 	{
@@ -145,7 +148,7 @@ async function main() {
 		// Mode 2: without-tool
 		console.log("  [without-tool] running...");
 		const withoutResult: AgentResult = await runAgent({
-			system: SYSTEM_PROMPT,
+			system: NO_TOOL_SYSTEM_PROMPT,
 			prompt: q.question,
 		});
 

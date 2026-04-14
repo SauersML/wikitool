@@ -4,10 +4,11 @@
 // questions spanning diverse topics and difficulty levels.
 // Usage: bun src/evals/wiki_trivia.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
-	DEFAULT_MODEL,
 	createSeenContent,
 	createWikiMcpServer,
+	DEFAULT_MODEL,
 	extractFinalAnswer,
 	initLog,
 	matchesAny,
@@ -30,9 +31,12 @@ export interface TriviaQuestion {
 
 // --- System prompt ---
 
-export const SYSTEM_PROMPT =
-	"You are a helpful trivia assistant. Answer the question as concisely and accurately as possible. If you have access to a search tool, use it when you are not confident. If you don't know the answer, say \"I don't know\" rather than guessing. " +
-	"End with ANSWER: followed by your answer.";
+// Eval-specific task prompt (answer formatting only).
+const TASK_PROMPT =
+	"Answer the trivia question as concisely and accurately as possible. If you don't know, say \"I don't know\" rather than guessing. End with ANSWER: followed by your answer.";
+
+export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // --- Questions ---
 // Curated from willcb/wiki-trivia-questions (2261 total rows).
@@ -252,15 +256,11 @@ export function judge(question: TriviaQuestion, response: string): boolean {
 
 // --- Main ---
 
-async function runQuestion(
-	q: TriviaQuestion,
-	index: number,
-	mode: "with-tool" | "without-tool",
-) {
+async function runQuestion(q: TriviaQuestion, index: number, mode: "with-tool" | "without-tool") {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] = {
-		system: SYSTEM_PROMPT,
+		system: mode === "with-tool" ? SYSTEM_PROMPT : NO_TOOL_SYSTEM_PROMPT,
 		prompt: q.question,
 	};
 

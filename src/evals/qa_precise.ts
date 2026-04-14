@@ -3,6 +3,7 @@
 // Grading uses Claude Sonnet via API with web search for verification.
 // Usage: bun src/evals/qa_precise.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	createSeenContent,
 	createWikiMcpServer,
@@ -31,9 +32,12 @@ export interface GradeResult {
 
 // --- Constants ---
 
-export const SYSTEM_PROMPT =
-	"You are a helpful assistant that answers questions thoroughly and accurately. You have access to a Wikipedia search tool. Use it when you think looking up information would help you give a better answer. Provide a clear, well-reasoned answer. " +
-	"End with ANSWER: followed by your answer.";
+// Eval-specific task prompt (answer formatting only).
+const TASK_PROMPT =
+	"Provide a clear, well-reasoned answer. End with ANSWER: followed by your answer.";
+
+export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 export const QUESTIONS: Question[] = [
 	{
@@ -147,10 +151,12 @@ export function parseGradeResponse(raw: string): GradeResult {
 
 async function gradeWithSonnet(prompt: string): Promise<string> {
 	const result = await runAgent({
-		system: "You are an expert evaluator. Use web search to verify facts before grading.",
+		system:
+			"You are an expert evaluator. Use web search and/or the Wikipedia tool to verify facts before grading.",
 		prompt,
 		builtinTools: ["WebSearch"],
-		allowedTools: ["WebSearch"],
+		mcpServers: { wiki: createWikiMcpServer() },
+		allowedTools: ["WebSearch", WIKI_TOOL_NAME],
 		model: GRADER_MODEL,
 		maxTurns: 10,
 	});
@@ -231,7 +237,7 @@ async function main() {
 		// --- Without tool ---
 		console.log("  Running WITHOUT tool...");
 		const withoutTool = await runAgent({
-			system: SYSTEM_PROMPT,
+			system: NO_TOOL_SYSTEM_PROMPT,
 			prompt: q.question,
 		});
 

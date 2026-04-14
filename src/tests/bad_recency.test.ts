@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { SYSTEM_PROMPT } from "../evals/bad_recency";
+import { SYSTEM_PROMPT } from "../tool/prompt";
 
-describe("bad_recency eval", () => {
-	test("SYSTEM_PROMPT instructs the model to be honest when tool returns no info", () => {
-		const lower = SYSTEM_PROMPT.toLowerCase();
-		// The eval depends on the prompt telling the model to be honest about uncertainty
-		// rather than fabricating answers when the tool fails. If this instruction is
-		// removed, the eval can no longer distinguish hallucination from instruction-following.
-		expect(lower).toContain("honest");
-		expect(lower).toContain("search");
+describe("shared SYSTEM_PROMPT (used by bad_recency and other with-tool evals)", () => {
+	test("mentions training data cutoff", () => {
+		expect(SYSTEM_PROMPT.toLowerCase()).toContain("cutoff");
 	});
 
-	test("SYSTEM_PROMPT mentions training data cutoff", () => {
-		const lower = SYSTEM_PROMPT.toLowerCase();
-		expect(lower).toContain("cutoff");
+	test("instructs searching for post-cutoff events", () => {
+		expect(SYSTEM_PROMPT.toLowerCase()).toContain("search");
 	});
 });

@@ -13,16 +13,26 @@
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
-	WIKI_TOOL_NAME,
 	createSeenContent,
 	createWikiMcpServer,
 	extractJson,
 	initLog,
 	pairedPermutationTest,
 	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
+
+// Eval-specific task prompt (coding-task framing + deliverable).
+const TASK_PROMPT =
+	"You are implementing an algorithm in Python. You have a working directory with Read, Write, and Bash tools — use them to write the file, run it, and iterate until it works.";
+
+// With-tool (implement step): shared sysprompt + task framing.
+const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+// No-tool variant (when Wikipedia is not enabled): bare task framing.
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // --- Types ---
 
@@ -255,8 +265,8 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	console.log(`\n[${index}] ${q.name} (${mode})`);
 	console.log(`  Launching Sonnet...`);
 
-	const builtinTools = ["Write", "Bash"];
-	const allowedTools = ["Write", "Bash"];
+	const builtinTools = ["Read", "Write", "Bash"];
+	const allowedTools = ["Read", "Write", "Bash"];
 	const mcpServers: Record<string, ReturnType<typeof createWikiMcpServer>> = {};
 
 	if (useTool) {
@@ -265,6 +275,7 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	}
 
 	const result = await runAgent({
+		system: useTool ? SYSTEM_PROMPT : NO_TOOL_SYSTEM_PROMPT,
 		prompt,
 		model: IMPL_MODEL,
 		builtinTools,
@@ -281,19 +292,23 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	// Save logs — full conversation, not just final answer
 	const logDir = `${import.meta.dir}/../../logs`;
 	await mkdir(logDir, { recursive: true });
-	const fullLog = JSON.stringify({
-		algorithm: q.name,
-		mode,
-		turns: result.turns,
-		usedTool: result.usedTool,
-		inputTokens: result.inputTokens,
-		outputTokens: result.outputTokens,
-		durationMs: result.durationMs,
-		costUsd: result.costUsd,
-		toolCalls: result.toolCalls,
-		assistantTexts: result.assistantTexts,
-		answer: result.answer,
-	}, null, 2);
+	const fullLog = JSON.stringify(
+		{
+			algorithm: q.name,
+			mode,
+			turns: result.turns,
+			usedTool: result.usedTool,
+			inputTokens: result.inputTokens,
+			outputTokens: result.outputTokens,
+			durationMs: result.durationMs,
+			costUsd: result.costUsd,
+			toolCalls: result.toolCalls,
+			assistantTexts: result.assistantTexts,
+			answer: result.answer,
+		},
+		null,
+		2,
+	);
 	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_sonnet.json`, fullLog);
 	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_code.py`, code);
 
@@ -343,25 +358,30 @@ async function evaluate(index: number, code: string, mode: string): Promise<Grad
 		prompt,
 		model: EVAL_MODEL,
 		builtinTools: ["Read", "Write", "Bash"],
-		allowedTools: ["Read", "Write", "Bash"],
+		mcpServers: { wiki: createWikiMcpServer({ seen: createSeenContent() }) },
+		allowedTools: ["Read", "Write", "Bash", WIKI_TOOL_NAME],
 		cwd: workDir,
 		maxTurns: 50,
 	});
 
 	// Save Opus log — full conversation
 	const logDir = `${import.meta.dir}/../../logs`;
-	const fullLog = JSON.stringify({
-		algorithm: q.name,
-		mode,
-		turns: result.turns,
-		inputTokens: result.inputTokens,
-		outputTokens: result.outputTokens,
-		durationMs: result.durationMs,
-		costUsd: result.costUsd,
-		toolCalls: result.toolCalls,
-		assistantTexts: result.assistantTexts,
-		answer: result.answer,
-	}, null, 2);
+	const fullLog = JSON.stringify(
+		{
+			algorithm: q.name,
+			mode,
+			turns: result.turns,
+			inputTokens: result.inputTokens,
+			outputTokens: result.outputTokens,
+			durationMs: result.durationMs,
+			costUsd: result.costUsd,
+			toolCalls: result.toolCalls,
+			assistantTexts: result.assistantTexts,
+			answer: result.answer,
+		},
+		null,
+		2,
+	);
 	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.json`, fullLog);
 
 	console.log(`  Opus done: ${result.turns} turns`);

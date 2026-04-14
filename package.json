@@ -6,7 +6,7 @@
 	"scripts": {
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
-		"build:chat": "bun build src/chat/main.ts --outfile=src/chat/main.bundle.txt --target=browser --minify --format=esm",
+		"build:chat": "bun build src/chat/main.ts --outfile=dist/chat.bundle.txt --target=browser --minify --format=esm",
 		"test": "bun run index.ts",
 		"cf-typegen": "wrangler types",
 		"lint": "biome check .",

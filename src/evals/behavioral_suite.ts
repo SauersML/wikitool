@@ -6,18 +6,12 @@
 
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { TOOL_DESCRIPTION } from "../tool/prompt";
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
 import { createSeenContent, searchWikipedia } from "../tool/search";
-import { DEFAULT_MODEL, initLog, runAgent, writeTsvResults } from "./utils";
+import { DEFAULT_MODEL, initLog, runAgent, WIKI_TOOL_NAME, writeTsvResults } from "./utils";
 
-const WIKI_TOOL_NAME = "mcp__wiki__search_wikipedia";
-
-const SYSTEM_PROMPT =
-	"You are a helpful assistant. You have access to a Wikipedia search tool. " +
-	"Use it whenever looking something up would make your answer more accurate or better grounded. " +
-	"Think before each search: what's the most targeted query? " +
-	"Be willing to reformulate or run follow-up queries if the first result is incomplete. " +
-	"Cite facts you got from Wikipedia explicitly in your answer.";
+// No eval-specific task framing — this suite studies natural behavior.
+const SYSTEM_PROMPT = SHARED_SYSTEM_PROMPT;
 
 interface Task {
 	id: string;
@@ -86,7 +80,7 @@ interface CallRecord {
 function createLoggingWikiServer(sink: CallRecord[]) {
 	const seen = createSeenContent();
 	const wikiTool = tool(
-		"search_wikipedia",
+		TOOL_NAME,
 		TOOL_DESCRIPTION,
 		{ query: z.string() },
 		async (args) => {

@@ -3,11 +3,12 @@
 // All questions are about events after May 2025 (model training cutoff).
 // Usage: bun src/evals/good_recency.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
-	DEFAULT_MODEL,
 	createSeenContent,
 	createWikiMcpServer,
+	DEFAULT_MODEL,
 	gradeWithModel,
 	initLog,
 	runAgent,
@@ -45,11 +46,14 @@ export const QUESTIONS = [
 // System prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT =
-	"You are a helpful assistant with access to a Wikipedia search tool. " +
-	"Your training data has a cutoff, so for recent events you should search " +
-	"Wikipedia to get current information. Answer questions accurately. " +
-	"End with ANSWER: followed by your answer.";
+// Eval-specific task prompt (answer formatting only).
+const TASK_PROMPT = "End with ANSWER: followed by your answer.";
+
+// With-tool: shared sysprompt + task formatting.
+const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+
+// No-tool: bare task prompt only.
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // ---------------------------------------------------------------------------
 // Grading helpers
@@ -92,7 +96,7 @@ async function runQuestion(
 	mode: "with-tool" | "without-tool",
 ): Promise<QuestionResult> {
 	const agentOpts: Parameters<typeof runAgent>[0] = {
-		system: SYSTEM_PROMPT,
+		system: mode === "with-tool" ? SYSTEM_PROMPT : NO_TOOL_SYSTEM_PROMPT,
 		prompt: question,
 		model: DEFAULT_MODEL,
 	};

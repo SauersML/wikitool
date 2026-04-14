@@ -1,11 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
-	ContentBlockParam,
 	MessageParam,
+	RawMessageStreamEvent,
+	TextBlockParam,
 	Tool,
 	ToolResultBlockParam,
 	ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages";
+import { SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
 import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/search";
 
 // ─── Config ─────────────────────────────────────────────────────────────────
@@ -13,48 +15,33 @@ import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/se
 const KEY_LS = "wikisearch.key";
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 4096;
-const MAX_TOOL_TURNS = 12;
+const MAX_TOOL_TURNS = 20;
 
 const KEY_VALID = /^sk-ant-api\d+-[A-Za-z0-9_\-]{10,}$/;
 const KEY_ADMIN = /^sk-ant-admin/;
 
 const TOOL: Tool = {
-	name: "search_wikipedia",
-	description:
-		"Search Wikipedia for factual information. Returns article content as XML (~4K chars). " +
-		"Pass article titles, topics, or descriptive phrases — e.g. \"Albert Einstein\", \"Tōhoku earthquake\". " +
-		"To target a specific section within an article, include section keywords in the query " +
-		"(e.g. \"Hafnium chemical properties\", \"World War I causes\"). " +
-		"Repeated queries across a conversation are deduplicated at sentence granularity, " +
-		"so calling the tool multiple times on related topics gives new information each time.",
+	name: TOOL_NAME,
+	description: TOOL_DESCRIPTION,
 	input_schema: {
 		type: "object",
-		properties: {
-			query: {
-				type: "string",
-				description: "Article title, topic, or descriptive phrase. Include section keywords to target specific article sections.",
-			},
-		},
+		properties: { query: { type: "string" } },
 		required: ["query"],
 	},
 };
 
-const SYSTEM = `You are a research assistant with access to a Wikipedia search tool. You help users understand facts, entities, events, and ideas by retrieving information from Wikipedia and synthesizing clear, accurate answers.
+const LAST_TURN_WARNING =
+	"[System note: you have one more tool call available after this one. Use it only if strictly necessary — otherwise answer now based on what you have gathered.]";
 
-Use search_wikipedia when a question involves named entities, specific figures, dates, counts, or events — especially anything recent or outside common knowledge. Skip the tool for simple arithmetic, definitions you're certain of, or purely creative tasks.
-
-Search with article titles or topics (e.g. "Albert Einstein", "Tōhoku earthquake"). For specific content within an article, add section keywords ("Hafnium chemical properties"). If a first search is insufficient, refine and try again — multiple calls per turn are fine.
-
-Cite the article and section you drew from. Be direct and concise. If the tool returns nothing useful, say so rather than speculating.`;
+const FORCE_ANSWER_NUDGE =
+	"You have reached your tool-call limit. Do not call any more tools. Based on the information you have gathered so far, provide your best final answer now.";
 
 // ─── State ──────────────────────────────────────────────────────────────────
-
-type Conversation = MessageParam[];
 
 const state = {
 	key: null as string | null,
 	keyPersistent: false,
-	conversation: [] as Conversation,
+	conversation: [] as MessageParam[],
 	seen: createSeenContent() as SeenContent,
 	streaming: false,
 	abortController: null as AbortController | null,
@@ -78,15 +65,26 @@ function saveKey(key: string, persistent: boolean) {
 	state.keyPersistent = persistent;
 }
 
+/** Aborts any in-flight Anthropic stream so the Anthropic client (which closes
+ *  over state.key) drops its reference and the key becomes unreachable. */
+function abortAnyStream() {
+	if (state.abortController) {
+		state.abortController.abort();
+		state.abortController = null;
+	}
+	state.streaming = false;
+}
+
 function forgetKey() {
+	abortAnyStream();
 	localStorage.removeItem(KEY_LS);
 	sessionStorage.removeItem(KEY_LS);
 	state.key = null;
 	state.keyPersistent = false;
-}
-
-function fingerprint(key: string): string {
-	return `${key.slice(0, 14)}…${key.slice(-4)} · ${state.keyPersistent ? "localStorage" : "sessionStorage"}`;
+	// Drop the whole conversation too — tool queries may reveal what the user
+	// was researching; the new user shouldn't inherit that.
+	state.conversation = [];
+	state.seen = createSeenContent();
 }
 
 // ─── DOM helpers ────────────────────────────────────────────────────────────
@@ -113,7 +111,7 @@ function $<T extends Element = HTMLElement>(id: string): T {
 
 function autoscroll(force = false) {
 	const main = $("messages");
-	const atBottom = main.scrollTop + main.clientHeight >= main.scrollHeight - 80;
+	const atBottom = main.scrollTop + main.clientHeight >= main.scrollHeight - 100;
 	if (force || atBottom) main.scrollTop = main.scrollHeight;
 }
 
@@ -139,7 +137,9 @@ function renderEmpty() {
 	]) {
 		const b = el("button", {}, q);
 		b.addEventListener("click", () => {
-			($("input") as HTMLTextAreaElement).value = q;
+			const input = $("input") as HTMLTextAreaElement;
+			input.value = q;
+			resizeTextarea();
 			submit();
 		});
 		examples.append(b);
@@ -160,38 +160,213 @@ function renderUserMessage(text: string) {
 	autoscroll(true);
 }
 
-function beginAssistantMessage(): { body: HTMLElement; wrapper: HTMLElement } {
-	const wrapper = el("div", { class: "msg assistant" });
-	const body = el("div", { class: "body" });
+type TextBlock = { kind: "text"; node: HTMLElement; cursor: HTMLElement; raw: string };
+type ToolBlockState = {
+	kind: "tool";
+	card: ToolCard;
+	jsonAccum: string;
+	serverToolUseId: string | null;
+};
+type BlockState = TextBlock | ToolBlockState;
+
+function createTextBlock(): TextBlock {
+	clearEmpty();
+	const node = el("div", { class: "msg assistant" });
+	const body = el("div", { class: "body streaming" });
 	const cursor = el("span", { class: "cursor" });
-	wrapper.append(body, cursor);
-	$("messages").append(wrapper);
+	node.append(body, cursor);
+	$("messages").append(node);
 	autoscroll(true);
-	return { body, wrapper };
+	return { kind: "text", node: body, cursor, raw: "" };
 }
 
-function endAssistantMessage(wrapper: HTMLElement) {
-	const cursor = wrapper.querySelector(".cursor");
-	if (cursor) cursor.remove();
+function appendTextDelta(block: TextBlock, delta: string) {
+	block.raw += delta;
+	block.node.appendChild(document.createTextNode(delta));
+	autoscroll();
+}
+
+function finalizeTextBlock(block: TextBlock) {
+	block.cursor.remove();
+	if (!block.raw) {
+		block.node.parentElement?.remove();
+		return;
+	}
+	block.node.classList.remove("streaming");
+	block.node.replaceChildren(renderMarkdown(block.raw));
+}
+
+// ─── Minimal, safe markdown renderer ────────────────────────────────────────
+// DOM-only (no innerHTML), link URLs restricted to http/https, builds nodes
+// with createElement + textContent so model output can't inject script tags
+// or event handlers even if prompt-injected via Wikipedia content.
+
+function renderMarkdown(md: string): DocumentFragment {
+	const frag = document.createDocumentFragment();
+	const lines = md.split("\n");
+	let i = 0;
+
+	const isBlockStart = (line: string) => /^(#{1,6}\s|[-*+]\s|\d+\.\s|```|>\s?)/.test(line);
+
+	while (i < lines.length) {
+		const line = lines[i];
+
+		if (line.trim() === "") {
+			i++;
+			continue;
+		}
+
+		// Fenced code block
+		if (/^```/.test(line)) {
+			const buf: string[] = [];
+			i++;
+			while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+				buf.push(lines[i]);
+				i++;
+			}
+			if (i < lines.length) i++;
+			const pre = document.createElement("pre");
+			const code = document.createElement("code");
+			code.textContent = buf.join("\n");
+			pre.appendChild(code);
+			frag.appendChild(pre);
+			continue;
+		}
+
+		// Heading — # and ## both render as h3 (biggest in-message heading),
+		// then ### → h4, #### → h5, etc.
+		const h = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+		if (h) {
+			const hashes = h[1].length;
+			const level = hashes <= 2 ? 3 : Math.min(hashes + 1, 6);
+			const el = document.createElement(`h${level}` as "h3" | "h4" | "h5" | "h6");
+			renderInline(h[2], el);
+			frag.appendChild(el);
+			i++;
+			continue;
+		}
+
+		// Unordered list
+		if (/^[-*+]\s+/.test(line)) {
+			const ul = document.createElement("ul");
+			while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
+				const li = document.createElement("li");
+				renderInline(lines[i].replace(/^[-*+]\s+/, ""), li);
+				ul.appendChild(li);
+				i++;
+			}
+			frag.appendChild(ul);
+			continue;
+		}
+
+		// Ordered list
+		if (/^\d+\.\s+/.test(line)) {
+			const ol = document.createElement("ol");
+			while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+				const li = document.createElement("li");
+				renderInline(lines[i].replace(/^\d+\.\s+/, ""), li);
+				ol.appendChild(li);
+				i++;
+			}
+			frag.appendChild(ol);
+			continue;
+		}
+
+		// Blockquote
+		if (/^>\s?/.test(line)) {
+			const bq = document.createElement("blockquote");
+			const parts: string[] = [];
+			while (i < lines.length && /^>\s?/.test(lines[i])) {
+				parts.push(lines[i].replace(/^>\s?/, ""));
+				i++;
+			}
+			renderInline(parts.join(" "), bq);
+			frag.appendChild(bq);
+			continue;
+		}
+
+		// Paragraph: collect until blank line or block-starting line
+		const para: string[] = [line];
+		i++;
+		while (i < lines.length && lines[i].trim() !== "" && !isBlockStart(lines[i])) {
+			para.push(lines[i]);
+			i++;
+		}
+		const p = document.createElement("p");
+		renderInline(para.join(" "), p);
+		frag.appendChild(p);
+	}
+
+	return frag;
+}
+
+/** Render inline markdown (code, bold, italic, links) into a parent node.
+ *  Recursive: bold/italic/link bodies are rendered inline too. */
+function renderInline(text: string, parent: Node) {
+	// Ordered by priority: `code`, **bold**, *italic*, [link](url).
+	// Single combined regex; earliest match in the string wins.
+	const re =
+		/`([^`\n]+)`|\*\*([^*\n][^*\n]*?)\*\*|\*([^*\n][^*\n]*?)\*|\[([^\]\n]+)\]\(([^)\s]+)\)/;
+	let remaining = text;
+	while (remaining.length > 0) {
+		const m = remaining.match(re);
+		if (!m || m.index === undefined) {
+			parent.appendChild(document.createTextNode(remaining));
+			return;
+		}
+		if (m.index > 0) {
+			parent.appendChild(document.createTextNode(remaining.slice(0, m.index)));
+		}
+		if (m[1] !== undefined) {
+			const c = document.createElement("code");
+			c.textContent = m[1];
+			parent.appendChild(c);
+		} else if (m[2] !== undefined) {
+			const b = document.createElement("strong");
+			renderInline(m[2], b);
+			parent.appendChild(b);
+		} else if (m[3] !== undefined) {
+			const i = document.createElement("em");
+			renderInline(m[3], i);
+			parent.appendChild(i);
+		} else if (m[4] !== undefined && m[5] !== undefined) {
+			if (/^https?:\/\//i.test(m[5])) {
+				const a = document.createElement("a");
+				a.href = m[5];
+				a.target = "_blank";
+				a.rel = "noopener noreferrer";
+				renderInline(m[4], a);
+				parent.appendChild(a);
+			} else {
+				// Unsafe URL scheme — render literal text, don't create link.
+				parent.appendChild(document.createTextNode(m[0]));
+			}
+		}
+		remaining = remaining.slice(m.index + m[0].length);
+	}
 }
 
 type ToolCard = {
-	root: HTMLElement;
 	setQuery: (q: string) => void;
-	setState: (s: "running" | "ok" | "error") => void;
+	setState: (s: "running" | "searching" | "ok" | "error", detail?: string) => void;
 	setResult: (body: string, isError: boolean) => void;
+	open: () => void;
 };
 
 function renderToolCard(): ToolCard {
-	const root = el("div", { class: "tool" });
+	clearEmpty();
+	const root = el("div", { class: "tool running" });
 	const head = el("div", { class: "tool-head" });
-	const label = el("span", { class: "label" }, "search_wikipedia");
-	const query = el("span", { class: "query" }, "");
-	const stateSpan = el("span", { class: "state running" }, "running");
+	const label = el("span", { class: "label" }, TOOL_NAME);
+	const query = el("span", { class: "query" }, "…");
+	const stateSpan = el("span", { class: "state running" });
+	const dots = el("span", { class: "dots" }, "● ● ●");
+	stateSpan.append(dots);
 	const chev = el("span", { class: "chev" }, "›");
 	head.append(label, query, stateSpan, chev);
-	const body = el("div", { class: "tool-body" });
-	body.textContent = "Searching…";
+
+	const body = el("div", { class: "tool-body" }, "preparing request…");
+
 	root.append(head, body);
 	head.addEventListener("click", () => root.classList.toggle("open"));
 
@@ -199,40 +374,134 @@ function renderToolCard(): ToolCard {
 	autoscroll();
 
 	return {
-		root,
 		setQuery(q) {
-			query.textContent = q ? `"${q}"` : "";
+			query.textContent = q ? `"${q}"` : "…";
 		},
-		setState(s) {
+		setState(s, detail) {
+			root.classList.remove("running");
+			stateSpan.textContent = "";
+			if (s === "running") {
+				root.classList.add("running");
+				stateSpan.append(dots);
+			} else if (s === "searching") {
+				root.classList.add("running");
+				stateSpan.textContent = "searching";
+			} else {
+				stateSpan.textContent = s;
+			}
 			stateSpan.className = `state ${s}`;
-			stateSpan.textContent = s;
+			if (detail) {
+				const detailSpan = el("span", { class: "detail" }, detail);
+				stateSpan.append(" ", detailSpan);
+			}
 		},
 		setResult(text, isError) {
 			body.textContent = text;
 			body.classList.toggle("error", isError);
+			if (isError) root.classList.add("open");
+		},
+		open() {
+			root.classList.add("open");
 		},
 	};
 }
 
-function renderError(message: string, onRetry?: () => void) {
-	const banner = el("div", { class: "error-banner" });
+type ErrorKind =
+	| "auth"
+	| "rate_limit"
+	| "overloaded"
+	| "server"
+	| "network"
+	| "client"
+	| "aborted"
+	| "unknown";
+
+function classifyError(err: unknown): { kind: ErrorKind; message: string; status?: number } {
+	if (err instanceof Anthropic.APIUserAbortError) return { kind: "aborted", message: "stopped" };
+	if (err instanceof Anthropic.AuthenticationError) {
+		return { kind: "auth", status: 401, message: "API key rejected" };
+	}
+	if (err instanceof Anthropic.PermissionDeniedError) {
+		return { kind: "auth", status: 403, message: "Key lacks permission for this model" };
+	}
+	if (err instanceof Anthropic.RateLimitError) {
+		return {
+			kind: "rate_limit",
+			status: 429,
+			message: "Rate limited — wait a moment before retrying",
+		};
+	}
+	if (err instanceof Anthropic.BadRequestError) {
+		const m = extractMessage(err);
+		return { kind: "client", status: 400, message: m || "Invalid request" };
+	}
+	if (err instanceof Anthropic.InternalServerError) {
+		const status = (err as { status?: number }).status ?? 500;
+		if (status === 529) return { kind: "overloaded", status, message: "Anthropic is overloaded" };
+		return { kind: "server", status, message: `Anthropic error (${status})` };
+	}
+	if (
+		err instanceof Anthropic.APIConnectionError ||
+		err instanceof Anthropic.APIConnectionTimeoutError
+	) {
+		return { kind: "network", message: "Network error reaching Anthropic" };
+	}
+	if (err instanceof Anthropic.APIError) {
+		return {
+			kind: "unknown",
+			status: (err as { status?: number }).status,
+			message:
+				extractMessage(err) ||
+				`API error${(err as { status?: number }).status ? ` (${(err as { status?: number }).status})` : ""}`,
+		};
+	}
+	if (err instanceof Error) {
+		// Fetch-level errors from the browser
+		if (/Failed to fetch|NetworkError/i.test(err.message)) {
+			return { kind: "network", message: "Network error — check your connection" };
+		}
+		return { kind: "unknown", message: err.message };
+	}
+	return { kind: "unknown", message: String(err) };
+}
+
+function extractMessage(err: unknown): string {
+	if (err instanceof Anthropic.APIError) {
+		const errorObj = (err as { error?: { error?: { message?: string } } }).error?.error;
+		return errorObj?.message || err.message || "";
+	}
+	return err instanceof Error ? err.message : String(err);
+}
+
+function renderError(
+	kind: ErrorKind,
+	message: string,
+	actions: { label: string; handler: () => void }[],
+) {
+	const banner = el("div", { class: `error-banner ${kind}` });
 	banner.append(el("span", {}, message));
-	if (onRetry) {
-		const btn = el("button", {}, "retry");
+	const actionsWrap = el("div", { class: "actions" });
+	for (const a of actions) {
+		const btn = el("button", {}, a.label);
 		btn.addEventListener("click", () => {
 			banner.remove();
-			onRetry();
+			a.handler();
 		});
-		banner.append(btn);
+		actionsWrap.append(btn);
 	}
-	const close = el("button", {}, "×");
+	const close = el("button", { class: "dismiss", "aria-label": "Dismiss" }, "×");
 	close.addEventListener("click", () => banner.remove());
-	banner.append(close);
+	actionsWrap.append(close);
+	banner.append(actionsWrap);
 	$("messages").append(banner);
 	autoscroll(true);
 }
 
-function setStatus(text: string, tone: "" | "ok" = "") {
+function clearErrorBanners() {
+	document.querySelectorAll(".error-banner").forEach((b) => b.remove());
+}
+
+function setStatus(text: string, tone: "" | "ok" | "err" = "") {
 	const s = $("status");
 	s.textContent = text;
 	s.className = tone ? `status ${tone}` : "status";
@@ -257,27 +526,94 @@ function setStreamingUI(streaming: boolean) {
 	}
 }
 
-// ─── Anthropic error extraction ─────────────────────────────────────────────
+// ─── Streaming agent loop ───────────────────────────────────────────────────
 
-function formatError(err: unknown): string {
-	if (err instanceof Anthropic.APIError) {
-		const msg = (err as { message?: string }).message || "API error";
-		// Strip any embedded request body/headers just in case.
-		return `${err.status ?? ""} ${msg}`.trim();
-	}
-	if (err instanceof Error) return err.message;
-	return String(err);
+/** Extract `query` from a partially-streamed JSON string for live preview. */
+function extractPartialQuery(json: string): string | null {
+	const match = json.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
+	if (!match) return null;
+	return match[1]
+		.replace(/\\n/g, "\n")
+		.replace(/\\t/g, "\t")
+		.replace(/\\r/g, "\r")
+		.replace(/\\"/g, '"')
+		.replace(/\\\\/g, "\\");
 }
 
-// ─── Agent loop ─────────────────────────────────────────────────────────────
+/**
+ * Run one Anthropic streaming turn. Returns the final message (caller pushes to conversation).
+ * Renders text and tool_use blocks as they stream. Throws on API error or user abort.
+ */
+async function runOneTurn(
+	client: Anthropic,
+	toolCardById: Map<string, ToolCard>,
+	includeTools = true,
+) {
+	state.abortController = new AbortController();
+	setStatus("thinking", "");
 
-async function runAgentLoop(userText: string) {
+	const stream = client.messages.stream(
+		{
+			model: MODEL,
+			max_tokens: MAX_TOKENS,
+			system: SYSTEM_PROMPT,
+			...(includeTools ? { tools: [TOOL] } : {}),
+			messages: state.conversation,
+		},
+		{ signal: state.abortController.signal },
+	);
+
+	const blocks = new Map<number, BlockState>();
+
+	stream.on("connect", () => {
+		setStatus("responding", "");
+	});
+
+	stream.on("streamEvent", (event: RawMessageStreamEvent) => {
+		if (event.type === "content_block_start") {
+			const cb = event.content_block;
+			if (cb.type === "text") {
+				blocks.set(event.index, createTextBlock());
+			} else if (cb.type === "tool_use") {
+				const card = renderToolCard();
+				toolCardById.set(cb.id, card);
+				blocks.set(event.index, {
+					kind: "tool",
+					card,
+					jsonAccum: "",
+					serverToolUseId: cb.id,
+				});
+			}
+		} else if (event.type === "content_block_delta") {
+			const block = blocks.get(event.index);
+			if (!block) return;
+			if (block.kind === "text" && event.delta.type === "text_delta") {
+				appendTextDelta(block, event.delta.text);
+			} else if (block.kind === "tool" && event.delta.type === "input_json_delta") {
+				block.jsonAccum += event.delta.partial_json;
+				const partial = extractPartialQuery(block.jsonAccum);
+				if (partial !== null) block.card.setQuery(partial);
+			}
+		} else if (event.type === "content_block_stop") {
+			const block = blocks.get(event.index);
+			if (block?.kind === "text") finalizeTextBlock(block);
+		}
+	});
+
+	const final = await stream.finalMessage();
+	setStatus("", "");
+	return final;
+}
+
+/**
+ * Outer agent loop. Keeps issuing turns until the model stops asking for tools
+ * or we hit the safety cap. Handles tool execution between turns.
+ */
+async function runAgentLoop() {
 	if (!state.key) {
 		openKeyModal();
 		return;
 	}
-	state.conversation.push({ role: "user", content: userText });
-	renderUserMessage(userText);
 
 	const client = new Anthropic({
 		apiKey: state.key,
@@ -285,162 +621,155 @@ async function runAgentLoop(userText: string) {
 	});
 
 	setStreamingUI(true);
-	setStatus("thinking");
+	clearErrorBanners();
+	const toolCardById = new Map<string, ToolCard>();
 
 	try {
 		for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-			state.abortController = new AbortController();
-			const assistant = beginAssistantMessage();
-
-			const stream = client.messages.stream(
-				{
-					model: MODEL,
-					max_tokens: MAX_TOKENS,
-					system: SYSTEM,
-					tools: [TOOL],
-					messages: state.conversation,
-				},
-				{ signal: state.abortController.signal },
-			);
-
-			const toolCards = new Map<number, ToolCard>();
-
-			stream.on("text", (delta, _snapshot) => {
-				assistant.body.appendChild(document.createTextNode(delta));
-				autoscroll();
-			});
-
-			stream.on("contentBlock", (block) => {
-				if (block.type === "tool_use") {
-					// Nothing to do — card was already created on start.
-				}
-			});
-
-			stream.on("streamEvent", (event) => {
-				if (event.type === "content_block_start") {
-					if (event.content_block.type === "tool_use") {
-						const card = renderToolCard();
-						toolCards.set(event.index, card);
-					}
-				} else if (event.type === "content_block_delta") {
-					if (event.delta.type === "input_json_delta") {
-						const card = toolCards.get(event.index);
-						if (!card) return;
-						try {
-							const accum = (card as ToolCard & { _accum?: string })._accum || "";
-							const next = accum + event.delta.partial_json;
-							(card as ToolCard & { _accum?: string })._accum = next;
-							const match = next.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
-							if (match) card.setQuery(unescapeJsonString(match[1]));
-						} catch {
-							/* ignore partial-json errors */
-						}
-					}
-				}
-			});
-
-			const final = await stream.finalMessage();
-			endAssistantMessage(assistant.wrapper);
-
-			// If the assistant produced no visible text, drop the empty body.
-			if (!assistant.body.textContent) {
-				assistant.body.remove();
-			}
+			toolCardById.clear();
+			const final = await runOneTurn(client, toolCardById);
 
 			state.conversation.push({ role: "assistant", content: final.content });
 
 			if (final.stop_reason !== "tool_use") {
-				setStatus("");
-				break;
+				return; // Normal end.
 			}
 
 			// Execute tool calls.
-			const toolUses = final.content.filter(
-				(b): b is ToolUseBlock => b.type === "tool_use",
-			);
+			const toolUses = final.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
 			const results: ToolResultBlockParam[] = [];
-			setStatus("searching");
 
-			for (let i = 0; i < toolUses.length; i++) {
-				const tu = toolUses[i];
-				const card = [...toolCards.values()][i] ?? renderToolCard();
+			for (const tu of toolUses) {
+				const card = toolCardById.get(tu.id) ?? renderToolCard();
+
 				const input = (tu.input ?? {}) as { query?: string };
 				const query = (input.query || "").trim();
 				card.setQuery(query);
 
-				if (tu.name !== "search_wikipedia" || !query) {
+				if (tu.name !== TOOL_NAME || !query) {
 					card.setState("error");
-					card.setResult(`Invalid tool call: ${tu.name}`, true);
+					card.setResult(`Unknown tool or missing query: ${tu.name}`, true);
 					results.push({
 						type: "tool_result",
 						tool_use_id: tu.id,
-						content: "Error: invalid tool call.",
+						content: "Error: invalid tool invocation.",
 						is_error: true,
 					});
 					continue;
 				}
 
+				card.setState("searching");
+				setStatus(`searching "${truncate(query, 40)}"`, "");
+
 				try {
 					const text = await searchWikipedia(query, state.seen);
 					card.setState("ok");
 					card.setResult(text, false);
-					results.push({ type: "tool_result", tool_use_id: tu.id, content: text });
-				} catch (err) {
-					const msg = `Wikipedia search failed: ${formatError(err)}`;
-					card.setState("error");
-					card.setResult(msg, true);
 					results.push({
 						type: "tool_result",
 						tool_use_id: tu.id,
-						content: msg,
+						content: text,
+					});
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					card.setState("error");
+					card.setResult(`Wikipedia search failed: ${message}`, true);
+					results.push({
+						type: "tool_result",
+						tool_use_id: tu.id,
+						content: `Error: ${message}`,
 						is_error: true,
 					});
 				}
 			}
 
-			state.conversation.push({ role: "user", content: results });
-			setStatus("thinking");
+			// Compose the user message: tool_results + any turn-budget nudge.
+			// - On the turn BEFORE the last allowed tool turn, warn the model.
+			// - On the last allowed tool turn itself (if still tool_use), append the
+			//   force-answer nudge and then run one final turn with no tools.
+			const isPenultimate = turn === MAX_TOOL_TURNS - 2;
+			const isFinal = turn === MAX_TOOL_TURNS - 1;
+			const userContent: Array<ToolResultBlockParam | TextBlockParam> = [...results];
+			if (isPenultimate) {
+				userContent.push({ type: "text", text: LAST_TURN_WARNING });
+			} else if (isFinal) {
+				userContent.push({ type: "text", text: FORCE_ANSWER_NUDGE });
+			}
+			state.conversation.push({ role: "user", content: userContent });
+
+			if (isFinal) {
+				toolCardById.clear();
+				const forced = await runOneTurn(client, toolCardById, false);
+				state.conversation.push({ role: "assistant", content: forced.content });
+				return;
+			}
 		}
 	} catch (err) {
-		const aborted = state.abortController?.signal.aborted;
-		if (!aborted) {
-			renderError(formatError(err), () => runAgentLoop(userText));
-			// Roll back the user message so retry doesn't duplicate it.
-			state.conversation = state.conversation.slice(0, -1);
-		}
+		handleLoopError(err);
 	} finally {
 		state.abortController = null;
 		setStreamingUI(false);
-		setStatus("");
+		setStatus("", "");
+		// Clean up any text blocks that are still open (e.g. on abort mid-stream).
+		document.querySelectorAll(".msg.assistant .cursor").forEach((c) => c.remove());
 	}
 }
 
-function unescapeJsonString(s: string): string {
-	return s.replace(/\\(.)/g, (_m, c) => {
-		if (c === "n") return "\n";
-		if (c === "t") return "\t";
-		if (c === "r") return "\r";
-		if (c === '"') return '"';
-		if (c === "\\") return "\\";
-		return c;
-	});
+function truncate(s: string, n: number): string {
+	return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function handleLoopError(err: unknown) {
+	const info = classifyError(err);
+	if (info.kind === "aborted") return; // Silent on user abort.
+
+	const actions: { label: string; handler: () => void }[] = [];
+
+	if (info.kind === "auth") {
+		actions.push({
+			label: "update key",
+			handler: () => openKeyModal(true),
+		});
+	} else if (
+		info.kind === "network" ||
+		info.kind === "overloaded" ||
+		info.kind === "server" ||
+		info.kind === "rate_limit"
+	) {
+		actions.push({ label: "retry", handler: retry });
+	} else if (info.kind === "unknown") {
+		actions.push({ label: "retry", handler: retry });
+	}
+
+	renderError(info.kind, info.message, actions);
+}
+
+function retry() {
+	if (state.streaming) return;
+	runAgentLoop();
 }
 
 // ─── Input handling ─────────────────────────────────────────────────────────
 
 function submit() {
+	if (!state.key) {
+		openKeyModal();
+		return;
+	}
 	const input = $("input") as HTMLTextAreaElement;
 	const text = input.value.trim();
 	if (!text || state.streaming) return;
 	input.value = "";
 	resizeTextarea();
-	runAgentLoop(text);
+	state.conversation.push({ role: "user", content: text });
+	renderUserMessage(text);
+	runAgentLoop();
 }
 
 function resizeTextarea() {
 	const input = $("input") as HTMLTextAreaElement;
 	input.style.height = "auto";
-	input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+	input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 }
 
 // ─── Modals ─────────────────────────────────────────────────────────────────
@@ -450,9 +779,11 @@ function openKeyModal(replace = false) {
 	const input = $("key-input") as HTMLInputElement;
 	const err = $("key-error");
 	const persist = $("key-persist") as HTMLInputElement;
+	const cancelBtn = $("key-cancel") as HTMLButtonElement;
 	input.value = "";
 	err.textContent = "";
 	persist.checked = state.keyPersistent || !replace;
+	cancelBtn.hidden = !state.key; // no cancel on first-run
 	modal.hidden = false;
 	setTimeout(() => input.focus(), 10);
 }
@@ -472,7 +803,7 @@ function handleKeySave() {
 	}
 	if (KEY_ADMIN.test(key)) {
 		err.textContent =
-			"Admin keys are too powerful for a chat UI (they can create/delete keys and manage billing). Use a regular API key.";
+			"Admin keys are too powerful for a chat UI (they can create keys and manage billing). Use a regular API key.";
 		return;
 	}
 	if (!KEY_VALID.test(key)) {
@@ -482,27 +813,23 @@ function handleKeySave() {
 	saveKey(key, persist.checked);
 	closeKeyModal();
 	setStatus("key saved", "ok");
-	setTimeout(() => setStatus(""), 2000);
-}
-
-function openSettings() {
-	if (!state.key) {
-		openKeyModal();
-		return;
+	setTimeout(() => setStatus("", ""), 2000);
+	// If an auth error was the reason we're here, retry.
+	const hadAuthError = document.querySelector(".error-banner.auth");
+	if (hadAuthError) {
+		hadAuthError.remove();
+		retry();
+	} else {
+		($("input") as HTMLTextAreaElement).focus();
 	}
-	const fp = $("key-fp");
-	fp.textContent = fingerprint(state.key);
-	$("settings-modal").hidden = false;
-}
-
-function closeSettings() {
-	$("settings-modal").hidden = true;
 }
 
 function newConversation() {
+	if (state.streaming) state.abortController?.abort();
 	state.conversation = [];
 	state.seen = createSeenContent();
 	renderEmpty();
+	setStatus("", "");
 }
 
 // ─── Wiring ─────────────────────────────────────────────────────────────────
@@ -540,24 +867,30 @@ function init() {
 		}
 	});
 
-	$("settings-btn").addEventListener("click", openSettings);
 	$("new-chat").addEventListener("click", newConversation);
-
-	$("settings-close").addEventListener("click", closeSettings);
-	$("key-replace").addEventListener("click", () => {
-		closeSettings();
+	$("replace-key").addEventListener("click", () => {
+		if (!state.key) {
+			openKeyModal();
+			return;
+		}
+		abortAnyStream();
 		openKeyModal(true);
 	});
-	$("key-forget").addEventListener("click", () => {
+	$("forget-key").addEventListener("click", () => {
+		if (!confirm("Forget your API key? This also clears the current conversation.")) return;
 		forgetKey();
-		closeSettings();
 		renderEmpty();
+		clearErrorBanners();
 		setStatus("key forgotten", "ok");
-		setTimeout(() => setStatus(""), 2000);
+		setTimeout(() => setStatus("", ""), 2000);
+		openKeyModal();
 	});
 
 	$("key-save").addEventListener("click", handleKeySave);
-	$("key-cancel").addEventListener("click", closeKeyModal);
+	$("key-cancel").addEventListener("click", () => {
+		// Only allow cancel if a key is already set.
+		if (state.key) closeKeyModal();
+	});
 	$("key-input").addEventListener("keydown", (e) => {
 		if ((e as KeyboardEvent).key === "Enter") {
 			e.preventDefault();
@@ -565,27 +898,15 @@ function init() {
 		}
 	});
 
-	// Close modals on backdrop click
-	for (const id of ["key-modal", "settings-modal"]) {
-		const m = $(id);
-		m.addEventListener("click", (e) => {
-			if (e.target === m) {
-				// Don't dismiss key modal if it's required (no key set).
-				if (id === "key-modal" && !state.key) return;
-				m.hidden = true;
-			}
-		});
-	}
-
-	// Keyboard: Esc closes modals
-	document.addEventListener("keydown", (e) => {
-		if (e.key === "Escape") {
-			if (!$("settings-modal").hidden) closeSettings();
-			else if (!$("key-modal").hidden && state.key) closeKeyModal();
-		}
+	const keyModal = $("key-modal");
+	keyModal.addEventListener("click", (e) => {
+		if (e.target === keyModal && state.key) keyModal.hidden = true;
 	});
 
-	// First-run: prompt for key
+	document.addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && !$("key-modal").hidden && state.key) closeKeyModal();
+	});
+
 	if (!state.key) openKeyModal();
 	else input.focus();
 }

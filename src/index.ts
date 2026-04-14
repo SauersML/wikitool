@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
-import chatBundle from "./chat/main.bundle.txt";
+import chatBundle from "../dist/chat.bundle.txt";
 import { serveHealth, serveLanding } from "./site";
 import { TOOL_DESCRIPTION, TOOL_NAME } from "./tool/prompt";
 import { createSeenContent, type SeenContent, searchWikipedia } from "./tool/search";

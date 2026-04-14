@@ -3,10 +3,11 @@
 // likely cannot answer from parametric knowledge alone.
 // Usage: bun src/evals/obscure_info.ts [questionIndex]
 
+import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
-	DEFAULT_MODEL,
 	createSeenContent,
 	createWikiMcpServer,
+	DEFAULT_MODEL,
 	extractFinalAnswer,
 	extractNumbers,
 	initLog,
@@ -38,9 +39,12 @@ export type ObscureQuestion = NumericQuestion | StringQuestion;
 
 // --- System prompt ---
 
-export const SYSTEM_PROMPT =
-	"You are a helpful assistant. Answer the question as precisely as possible. If you have access to a search tool, use it. If you don't know the answer, say \"I don't know\" rather than guessing. " +
-	"End with ANSWER: followed by your precise answer.";
+// Eval-specific task prompt (answer formatting only).
+const TASK_PROMPT =
+	"Answer the question as precisely as possible. If you don't know the answer, say \"I don't know\" rather than guessing. End with ANSWER: followed by your precise answer.";
+
+export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // --- Questions ---
 
@@ -217,15 +221,11 @@ export function judge(question: ObscureQuestion, response: string): boolean {
 
 // --- Main ---
 
-async function runQuestion(
-	q: ObscureQuestion,
-	index: number,
-	mode: "with-tool" | "without-tool",
-) {
+async function runQuestion(q: ObscureQuestion, index: number, mode: "with-tool" | "without-tool") {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] = {
-		system: SYSTEM_PROMPT,
+		system: mode === "with-tool" ? SYSTEM_PROMPT : NO_TOOL_SYSTEM_PROMPT,
 		prompt: q.question,
 	};
 

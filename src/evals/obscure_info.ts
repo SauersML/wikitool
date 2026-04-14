@@ -5,12 +5,15 @@
 
 import {
 	DEFAULT_MODEL,
+	createSeenContent,
+	createWikiMcpServer,
 	extractFinalAnswer,
+	extractNumbers,
 	initLog,
 	matchesAny,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -195,12 +198,6 @@ export const QUESTIONS: ObscureQuestion[] = [
 
 // --- Judging ---
 
-export function extractNumbers(text: string): number[] {
-	const matches = text.match(/[\d,]+\.?\d*/g);
-	if (!matches) return [];
-	return matches.map((m) => Number.parseFloat(m.replace(/,/g, ""))).filter((n) => !Number.isNaN(n));
-}
-
 export function judgeNumeric(response: string, expected: number, tolerancePct: number): boolean {
 	const numbers = extractNumbers(response);
 	const tolerance = expected * (tolerancePct / 100);
@@ -224,20 +221,22 @@ async function runQuestion(
 	q: ObscureQuestion,
 	index: number,
 	mode: "with-tool" | "without-tool",
-	log: (entry: unknown) => Promise<void>,
 ) {
-	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
-	const result = await runAgentLoop(
-		{
-			system: SYSTEM_PROMPT,
-			userMessage: q.question,
-			tools,
-		},
-		log,
-	);
+	const agentOpts: Parameters<typeof runAgent>[0] = {
+		system: SYSTEM_PROMPT,
+		prompt: q.question,
+	};
+
+	if (mode === "with-tool") {
+		const seen = createSeenContent();
+		const wikiServer = createWikiMcpServer({ seen });
+		agentOpts.mcpServers = { wiki: wikiServer };
+		agentOpts.allowedTools = [WIKI_TOOL_NAME];
+	}
+
+	const result = await runAgent(agentOpts);
 
 	const isCorrect = judge(q, result.answer);
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
@@ -253,7 +252,7 @@ async function runQuestion(
 		mode,
 		usedTool: String(result.usedTool),
 		toolQueries,
-		modelAnswer: result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+		modelAnswer: result.answer,
 		isCorrect: String(isCorrect),
 		turns: String(result.turns),
 		inputTokens: String(result.inputTokens),
@@ -280,7 +279,7 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("obscure_info");
+	const { path: logPath } = await initLog("obscure_info");
 
 	const headers = [
 		"question",
@@ -300,7 +299,7 @@ async function main() {
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
+			const result = await runQuestion(q, i, mode);
 			rows.push([
 				result.question,
 				result.expectedAnswer,

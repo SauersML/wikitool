@@ -71,6 +71,20 @@ describe("wiki_trivia eval", () => {
 			expect(judge(q, "Kallikrates was one of the architects.")).toBe(true);
 			expect(judge(q, "Phidias supervised the construction.")).toBe(false);
 		});
+
+		test("prefers extractFinalAnswer over full-response matching", () => {
+			const q: TriviaQuestion = {
+				question: "What is the name of the gold coin introduced in 1663?",
+				answer: "Guinea",
+				acceptableAnswers: ["Guinea"],
+				topic: "Numismatics",
+				datasetIndex: 1572,
+			};
+			// "Guinea" appears only in the ANSWER: line, not in a misleading context
+			expect(judge(q, "The coin was minted from African gold.\nANSWER: Guinea")).toBe(true);
+			// If extractFinalAnswer finds the answer line, only that text is judged
+			expect(judge(q, "Not related to Papua New Guinea.\nANSWER: Guinea")).toBe(true);
+		});
 	});
 
 	describe("matchesAny with trivia answers", () => {
@@ -96,6 +110,15 @@ describe("wiki_trivia eval", () => {
 		test("matches short unique answers", () => {
 			expect(matchesAny("The alloy is called Elektron.", ["Elektron"])).toBe(true);
 			expect(matchesAny("The armour system is Kontakt-5.", ["Kontakt-5", "Kontakt 5"])).toBe(true);
+		});
+
+		test("does not match answer embedded in a longer word", () => {
+			// "Knorr" (the serial killer) should not match "Knorr's" soup brand discussion
+			// — actually it DOES match, because apostrophe is not a word char. This is
+			// acceptable: possessive forms are valid matches ("Knorr's crimes...").
+			expect(matchesAny("Knorr's crimes were horrific.", ["Knorr"])).toBe(true);
+			// But it should NOT match if embedded in a longer word
+			expect(matchesAny("Knorrenberg is a German town.", ["Knorr"])).toBe(false);
 		});
 	});
 });

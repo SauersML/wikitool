@@ -4,12 +4,14 @@
 
 import {
 	type AgentResult,
+	createSeenContent,
+	createWikiMcpServer,
 	DEFAULT_MODEL,
 	initLog,
 	matchesAny,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -83,7 +85,7 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	const { log } = await initLog("unnecessary_tool");
+	await initLog("unnecessary_tool");
 	const rows: string[][] = [];
 
 	let withToolUsedCount = 0;
@@ -103,14 +105,14 @@ async function main() {
 
 		// Mode 1: with-tool
 		console.log("  [with-tool] running...");
-		const withResult: AgentResult = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				tools: [WIKI_TOOL],
-			},
-			log,
-		);
+		const seen = createSeenContent();
+		const wikiServer = createWikiMcpServer({ seen });
+		const withResult: AgentResult = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+			mcpServers: { wiki: wikiServer },
+			allowedTools: [WIKI_TOOL_NAME],
+		});
 
 		const toolQueries = withResult.toolCalls
 			.map((tc) => (tc.input["query"] as string) ?? "")
@@ -132,8 +134,8 @@ async function main() {
 			q.acceptableAnswers.join(", "),
 			"with-tool",
 			String(withResult.usedTool),
-			toolQueries.replace(/\t/g, " ").replace(/\n/g, " "),
-			withResult.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+			toolQueries,
+			withResult.answer,
 			String(withCorrect),
 			String(withResult.turns),
 			String(withResult.inputTokens),
@@ -142,14 +144,10 @@ async function main() {
 
 		// Mode 2: without-tool
 		console.log("  [without-tool] running...");
-		const withoutResult: AgentResult = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				tools: [],
-			},
-			log,
-		);
+		const withoutResult: AgentResult = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+		});
 
 		const withoutCorrect = matchesAny(withoutResult.answer, q.acceptableAnswers);
 		if (withoutCorrect) withoutToolCorrect++;
@@ -167,7 +165,7 @@ async function main() {
 			"without-tool",
 			String(withoutResult.usedTool),
 			"",
-			withoutResult.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+			withoutResult.answer,
 			String(withoutCorrect),
 			String(withoutResult.turns),
 			String(withoutResult.inputTokens),

@@ -1,40 +1,56 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import Anthropic from "@anthropic-ai/sdk";
-import { QUERY_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
+import { TOOL_DESCRIPTION } from "../tool/prompt";
 import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/search";
 
 // --- Constants ---
 
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
-const client = new Anthropic();
+// --- Wiki MCP server factory ---
 
-export const WIKI_TOOL: Anthropic.Messages.Tool = {
-	name: TOOL_NAME,
-	description: TOOL_DESCRIPTION,
-	input_schema: {
-		type: "object" as const,
-		properties: {
-			query: {
-				type: "string",
-				description: QUERY_DESCRIPTION,
-			},
+export interface WikiMcpOptions {
+	/** Cross-call dedup state. Created fresh if omitted. */
+	seen?: SeenContent;
+	/** Post-process search results (used by incorrect_info / ccp_bench to tamper). */
+	transform?: (result: string) => string;
+}
+
+/**
+ * Create an in-process MCP server exposing the `search_wikipedia` tool.
+ * Each benchmark call should create a fresh server to get clean dedup state.
+ */
+export function createWikiMcpServer(opts?: WikiMcpOptions) {
+	const seen = opts?.seen ?? createSeenContent();
+	const transform = opts?.transform;
+
+	const wikiTool = tool(
+		"search_wikipedia",
+		TOOL_DESCRIPTION,
+		{ query: z.string() },
+		async (args) => {
+			let result = await searchWikipedia(args.query, seen);
+			if (transform) result = transform(result);
+			return { content: [{ type: "text" as const, text: result }] };
 		},
-		required: ["query"],
-	},
-};
+		{ annotations: { readOnlyHint: true } },
+	);
 
-/** Server-side code execution sandbox (Python + Bash). No client handler needed. */
-export const CODE_EXECUTION_TOOL: Anthropic.Messages.CodeExecutionTool20250825 = {
-	type: "code_execution_20250825",
-	name: "code_execution",
-};
+	return createSdkMcpServer({ name: "wiki", tools: [wikiTool] });
+}
 
-/** Server-side web search. No client handler needed. */
-export const WEB_SEARCH_TOOL: Anthropic.Messages.WebSearchTool20260209 = {
-	type: "web_search_20260209",
-	name: "web_search",
-};
+export const WIKI_TOOL_NAME = "mcp__wiki__search_wikipedia";
+
+/**
+ * External MCP servers (claude.ai proxy) leak into Agent SDK processes via the
+ * user's Claude account. Block them by default to prevent contamination of
+ * "without-tool" benchmark runs.
+ */
+const INHERITED_MCP_TOOLS = [
+	"mcp__claude_ai_wikisearch__search_wikipedia",
+	"mcp__emoji-mcp__get_emoji",
+];
 
 // --- Types ---
 
@@ -51,34 +67,123 @@ export interface AgentResult {
 	outputTokens: number;
 	usedTool: boolean;
 	toolCalls: ToolCallRecord[];
-	messages: Anthropic.Messages.MessageParam[];
+	/** All text blocks from assistant messages (for code extraction in impl_bench). */
+	assistantTexts: string[];
 	durationMs: number;
-	toolDurationMs: number;
+	costUsd: number;
+	/** Session ID — use with `resume` for multi-turn conversations (ccp_bench). */
+	sessionId: string;
 }
 
-export type ToolHandler = (name: string, input: Record<string, unknown>) => Promise<string>;
-
-export interface RunOptions {
-	system: string;
-	userMessage: string;
-	tools?: Anthropic.Messages.ToolUnion[];
-	toolHandler?: ToolHandler;
+export interface RunAgentOptions {
+	prompt: string;
+	system?: string;
 	model?: string;
-	maxTokens?: number;
 	maxTurns?: number;
-	initialMessages?: Anthropic.Messages.MessageParam[];
+	/** Built-in tools: "Bash", "Write", "Read", "WebSearch", etc. Pass [] to disable all. */
+	builtinTools?: string[];
+	/** MCP server configs (typically { wiki: createWikiMcpServer() }). */
+	mcpServers?: Record<string, ReturnType<typeof createSdkMcpServer>>;
+	/** Tool names to auto-approve without permission prompts. */
+	allowedTools?: string[];
+	/** Tool names to block (overrides inherited MCP servers from the environment). */
+	disallowedTools?: string[];
+	/** Working directory for file/bash tools (impl_bench). */
+	cwd?: string;
+	/** Resume a previous session (ccp_bench multi-turn). */
+	resume?: string;
 }
 
-// --- Default tool handler ---
+// --- Agent runner ---
 
-/** Create a tool handler that passes `seen` to searchWikipedia for cross-call dedup. */
-export function createToolHandler(seen: SeenContent): ToolHandler {
-	return async (name: string, input: Record<string, unknown>): Promise<string> => {
-		if (name === TOOL_NAME) {
-			return searchWikipedia(input["query"] as string, seen);
+/**
+ * Run the Claude Agent SDK and return a structured result.
+ * Replaces the hand-rolled runAgentLoop.
+ */
+export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
+	const toolCalls: ToolCallRecord[] = [];
+	const assistantTexts: string[] = [];
+	let usedTool = false;
+	let sessionId = "";
+
+	for await (const msg of query({
+		prompt: opts.prompt,
+		options: {
+			model: opts.model ?? DEFAULT_MODEL,
+			systemPrompt: opts.system,
+			maxTurns: opts.maxTurns ?? 15,
+			tools: opts.builtinTools ?? [],
+			mcpServers: (opts.mcpServers ?? {}) as Record<string, import("@anthropic-ai/claude-agent-sdk").McpServerConfig>,
+			allowedTools: opts.allowedTools ?? [],
+			disallowedTools: opts.disallowedTools ?? INHERITED_MCP_TOOLS,
+			permissionMode: "bypassPermissions",
+			allowDangerouslySkipPermissions: true,
+			cwd: opts.cwd,
+			resume: opts.resume,
+			settingSources: [],
+			persistSession: true,
+		},
+	})) {
+		if (msg.type === "system" && "session_id" in msg) {
+			sessionId = (msg as { session_id: string }).session_id;
 		}
-		return `Unknown tool: ${name}`;
+		if (msg.type === "assistant" && "message" in msg) {
+			const content = (msg as SDKAssistantMessageLike).message?.content;
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type === "tool_use") {
+						usedTool = true;
+						toolCalls.push({
+							name: block.name,
+							input: (block.input ?? {}) as Record<string, unknown>,
+							result: "",
+						});
+					}
+					if (block.type === "text" && "text" in block) {
+						assistantTexts.push(block.text);
+					}
+				}
+			}
+		}
+		if (msg.type === "result") {
+			const r = msg as SDKResultLike;
+			if (r.subtype === "success") {
+				return {
+					answer: r.result ?? "",
+					turns: r.num_turns ?? 0,
+					inputTokens: r.usage?.input_tokens ?? 0,
+					outputTokens: r.usage?.output_tokens ?? 0,
+					usedTool,
+					toolCalls,
+					assistantTexts,
+					durationMs: r.duration_ms ?? 0,
+					costUsd: r.total_cost_usd ?? 0,
+					sessionId,
+				};
+			}
+			// Error result
+			const errors = (r as { errors?: string[] }).errors ?? [];
+			throw new Error(`Agent failed (${r.subtype}): ${errors.join(", ")}`);
+		}
+	}
+	throw new Error("Agent query ended without result");
+}
+
+// Loose shape types for SDK messages (avoids tight coupling to SDK internals)
+interface SDKAssistantMessageLike {
+	type: "assistant";
+	message?: {
+		content: Array<{ type: string; name?: string; input?: unknown; text?: string }>;
 	};
+}
+interface SDKResultLike {
+	type: "result";
+	subtype: string;
+	result?: string;
+	num_turns?: number;
+	duration_ms?: number;
+	total_cost_usd?: number;
+	usage?: { input_tokens: number; output_tokens: number };
 }
 
 export { createSeenContent, type SeenContent };
@@ -86,7 +191,8 @@ export { createSeenContent, type SeenContent };
 // --- Timestamp ---
 
 export function timestamp(): string {
-	return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+	// "2026-04-12T14:30:45.123Z" → "2026-04-12T14-30-45"
+	return new Date().toISOString().slice(0, 19).replaceAll(":", "-").replaceAll(".", "-");
 }
 
 // --- Logging ---
@@ -103,8 +209,26 @@ export async function initLog(
 	return { log, path };
 }
 
-// --- TSV results ---
+// --- TSV helpers ---
 
+/** Sanitize a string for safe embedding in a TSV cell (no tabs, no newlines). */
+export function sanitizeTsvField(s: string): string {
+	return s.replaceAll("\r\n", " ").replaceAll("\r", " ").replaceAll("\n", " ").replaceAll("\t", " ");
+}
+
+/**
+ * Parse TSV content into rows of string arrays.
+ * Handles \r\n, \r, and \n line endings. Skips empty lines.
+ */
+export function parseTsvRows(content: string): string[][] {
+	const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+	return normalized
+		.split("\n")
+		.filter((line) => line.trim().length > 0)
+		.map((line) => line.split("\t"));
+}
+
+/** Write TSV results. Fields are auto-sanitized — callers pass raw strings. */
 export async function writeTsvResults(
 	evalName: string,
 	headers: string[],
@@ -113,175 +237,11 @@ export async function writeTsvResults(
 	const dir = `${import.meta.dir}/results`;
 	await mkdir(dir, { recursive: true });
 	const path = `${dir}/${evalName}_${timestamp()}.tsv`;
-	const lines = [headers.join("\t"), ...rows.map((r) => r.join("\t"))];
+	const sanitizedRows = rows.map((r) => r.map(sanitizeTsvField));
+	const lines = [headers.join("\t"), ...sanitizedRows.map((r) => r.join("\t"))];
 	await Bun.write(path, `${lines.join("\n")}\n`);
 	console.log(`Results written to ${path}`);
 	return path;
-}
-
-// --- Agent loop ---
-
-export async function runAgentLoop(
-	opts: RunOptions,
-	log?: (entry: unknown) => Promise<void>,
-): Promise<AgentResult> {
-	const model = opts.model ?? DEFAULT_MODEL;
-	const maxTokens = opts.maxTokens ?? 1024;
-	const maxTurns = opts.maxTurns ?? 15;
-	const handler = opts.toolHandler ?? createToolHandler(createSeenContent());
-	const tools = opts.tools ?? [WIKI_TOOL];
-	const apiTools = tools.length > 0 ? tools : undefined;
-
-	const messages: Anthropic.Messages.MessageParam[] = [
-		...(opts.initialMessages ?? []),
-		{ role: "user", content: opts.userMessage },
-	];
-
-	const startTime = performance.now();
-	let turns = 0;
-	let inputTokens = 0;
-	let outputTokens = 0;
-	let usedTool = false;
-	let toolDurationMs = 0;
-	const toolCalls: ToolCallRecord[] = [];
-
-	while (turns < maxTurns) {
-		turns++;
-
-		const request = {
-			model,
-			max_tokens: maxTokens,
-			system: opts.system,
-			messages,
-			...(apiTools ? { tools: apiTools } : {}),
-		};
-
-		const response = await client.messages.create(request);
-
-		inputTokens += response.usage.input_tokens;
-		outputTokens += response.usage.output_tokens;
-
-		if (log) {
-			await log({
-				timestamp: new Date().toISOString(),
-				turn: turns,
-				request: { model, system: opts.system, messages, tools, max_tokens: maxTokens },
-				response: {
-					id: response.id,
-					stop_reason: response.stop_reason,
-					content: response.content,
-					usage: response.usage,
-				},
-			});
-		}
-
-		messages.push({ role: "assistant", content: response.content });
-
-		if (response.stop_reason !== "tool_use") {
-			break;
-		}
-
-		// Process client tool calls only (server tools like code_execution
-		// and web_search are handled automatically by the API).
-		const toolUseBlocks = response.content.filter(
-			(b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use",
-		);
-
-		// Safety: if stop_reason was tool_use but only server tools fired, break
-		if (toolUseBlocks.length === 0) {
-			break;
-		}
-
-		const results: Anthropic.Messages.ToolResultBlockParam[] = [];
-		for (const block of toolUseBlocks) {
-			usedTool = true;
-			const input = block.input as Record<string, unknown>;
-			let result: string;
-			const toolStart = performance.now();
-			try {
-				result = await handler(block.name, input);
-				toolDurationMs += performance.now() - toolStart;
-			} catch (err) {
-				toolDurationMs += performance.now() - toolStart;
-				result = `Error: ${err instanceof Error ? err.message : String(err)}`;
-				results.push({
-					type: "tool_result",
-					tool_use_id: block.id,
-					content: result,
-					is_error: true,
-				});
-				toolCalls.push({ name: block.name, input, result });
-				continue;
-			}
-			toolCalls.push({ name: block.name, input, result });
-			results.push({
-				type: "tool_result",
-				tool_use_id: block.id,
-				content: result,
-			});
-		}
-
-		messages.push({ role: "user", content: results });
-	}
-
-	// If the loop ended without a text answer (exhausted turns on a tool_use
-	// turn, or last assistant message has no text), force one final turn
-	// without tools so the model produces a text response.
-	const lastEntry = messages.at(-1);
-	const needsForce =
-		// Case 1: last message is tool_results (loop exited mid-tool-use)
-		(lastEntry?.role === "user" &&
-			Array.isArray(lastEntry.content) &&
-			(lastEntry.content as Anthropic.Messages.ToolResultBlockParam[]).some(
-				(b) => b.type === "tool_result",
-			)) ||
-		// Case 2: last assistant message has no text blocks
-		(lastEntry?.role === "assistant" &&
-			Array.isArray(lastEntry.content) &&
-			!(lastEntry.content as Anthropic.Messages.ContentBlock[]).some((b) => b.type === "text"));
-	if (needsForce) {
-		const forceResponse = await client.messages.create({
-			model,
-			max_tokens: maxTokens,
-			system: opts.system,
-			messages: [
-				...messages,
-				{
-					role: "user",
-					content:
-						"You have reached the tool use limit. Based on the information you have gathered so far, provide your best answer now. End with ANSWER: followed by your answer.",
-				},
-			],
-		});
-		inputTokens += forceResponse.usage.input_tokens;
-		outputTokens += forceResponse.usage.output_tokens;
-		messages.push({ role: "assistant", content: forceResponse.content });
-		turns++;
-	}
-
-	// Extract final answer from last assistant message
-	const lastMsg = messages.at(-1);
-	let answer = "";
-	if (lastMsg?.role === "assistant" && Array.isArray(lastMsg.content)) {
-		const textBlocks = (lastMsg.content as Anthropic.Messages.ContentBlock[]).filter(
-			(b): b is Anthropic.Messages.TextBlock => b.type === "text",
-		);
-		const lastText = textBlocks.at(-1);
-		if (lastText) answer = lastText.text;
-	}
-
-	const durationMs = performance.now() - startTime;
-	return {
-		answer,
-		turns,
-		inputTokens,
-		outputTokens,
-		usedTool,
-		toolCalls,
-		messages,
-		durationMs,
-		toolDurationMs,
-	};
 }
 
 // --- Model grading ---
@@ -289,21 +249,44 @@ export async function runAgentLoop(
 export const GRADER_MODEL = "claude-sonnet-4-6";
 
 export async function gradeWithModel(prompt: string, model?: string): Promise<string> {
-	const response = await client.messages.create({
+	const result = await runAgent({
+		prompt,
 		model: model ?? GRADER_MODEL,
-		max_tokens: 512,
-		messages: [{ role: "user", content: prompt }],
+		maxTurns: 1,
 	});
-	const text = response.content.find((b): b is Anthropic.Messages.TextBlock => b.type === "text");
-	if (!text) throw new Error("Grader returned no text block");
-	return text.text;
+	return result.answer;
 }
 
 // --- Helpers ---
 
+/** Check if a character is a word character (letter, digit, underscore). */
+function isWordChar(ch: string): boolean {
+	const c = ch.charCodeAt(0);
+	return (
+		(c >= 65 && c <= 90) || // A-Z
+		(c >= 97 && c <= 122) || // a-z
+		(c >= 48 && c <= 57) || // 0-9
+		c === 95 // _
+	);
+}
+
+/** Check if `needle` appears in `haystack` at a word boundary (case-insensitive). */
+function containsWord(haystack: string, needle: string): boolean {
+	const hLower = haystack.toLowerCase();
+	const nLower = needle.toLowerCase();
+	let start = 0;
+	while (true) {
+		const idx = hLower.indexOf(nLower, start);
+		if (idx === -1) return false;
+		const before = idx > 0 ? hLower[idx - 1]! : " ";
+		const after = idx + nLower.length < hLower.length ? hLower[idx + nLower.length]! : " ";
+		if (!isWordChar(before) && !isWordChar(after)) return true;
+		start = idx + 1;
+	}
+}
+
 export function matchesAny(response: string, acceptableAnswers: string[]): boolean {
-	const lower = response.toLowerCase();
-	return acceptableAnswers.some((a) => lower.includes(a.toLowerCase()));
+	return acceptableAnswers.some((answer) => containsWord(response, answer));
 }
 
 /**
@@ -313,30 +296,218 @@ export function matchesAny(response: string, acceptableAnswers: string[]): boole
  * Returns null if no pattern is found, so callers can fall back to full-response matching.
  */
 export function extractFinalAnswer(response: string): string | null {
-	const patterns = [
-		/ANSWER\s*:\s*(.+)/i,
-		/Final answer\s*:\s*(.+)/i,
-		/The answer is\s*:?\s*(.+)/i,
-		/My answer is\s*:?\s*(.+)/i,
-		/My answer\s*:\s*(.+)/i,
+	const PREFIXES: { phrase: string; colonRequired: boolean }[] = [
+		{ phrase: "answer", colonRequired: true },
+		{ phrase: "final answer", colonRequired: true },
+		{ phrase: "the answer is", colonRequired: false },
+		{ phrase: "my answer is", colonRequired: false },
+		{ phrase: "my answer", colonRequired: true },
 	];
 
 	let lastMatch: string | null = null;
 	let lastIndex = -1;
+	const lower = response.toLowerCase();
 
-	for (const pattern of patterns) {
-		const global = new RegExp(pattern.source, `${pattern.flags}g`);
-		let match: RegExpExecArray | null = global.exec(response);
-		while (match !== null) {
-			if (match.index > lastIndex) {
-				lastIndex = match.index;
-				lastMatch = match[1]!.trim();
+	for (const { phrase, colonRequired } of PREFIXES) {
+		let searchFrom = 0;
+		while (searchFrom < lower.length) {
+			const idx = lower.indexOf(phrase, searchFrom);
+			if (idx === -1) break;
+
+			let pos = idx + phrase.length;
+			// Skip whitespace
+			while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+			// Check for colon
+			if (pos < response.length && response[pos] === ":") {
+				pos++;
+			} else if (colonRequired) {
+				searchFrom = idx + 1;
+				continue;
 			}
-			match = global.exec(response);
+			// Skip whitespace after colon / "is"
+			while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+
+			// Take until end of line
+			const eol = response.indexOf("\n", pos);
+			const value = (eol >= 0 ? response.slice(pos, eol) : response.slice(pos)).trim();
+
+			if (value && idx > lastIndex) {
+				lastIndex = idx;
+				lastMatch = value;
+			}
+			searchFrom = idx + 1;
 		}
 	}
 
 	return lastMatch;
+}
+
+/**
+ * Try to extract the first JSON object from a string.
+ * Finds the first `{` and last `}` and attempts JSON.parse.
+ */
+export function extractJson(text: string): Record<string, unknown> | null {
+	const start = text.indexOf("{");
+	if (start === -1) return null;
+	// Try progressively shorter substrings from the last `}` backward
+	let end = text.lastIndexOf("}");
+	while (end > start) {
+		try {
+			return JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+		} catch {
+			end = text.lastIndexOf("}", end - 1);
+		}
+	}
+	return null;
+}
+
+/**
+ * Strip markdown code fences wrapping a string.
+ * Handles ```json, ```python, plain ```, etc.
+ */
+export function stripCodeFences(text: string): string {
+	let s = text.trim();
+	if (s.startsWith("```")) {
+		const firstNewline = s.indexOf("\n");
+		if (firstNewline >= 0) {
+			s = s.slice(firstNewline + 1);
+		}
+	}
+	if (s.endsWith("```")) {
+		s = s.slice(0, s.lastIndexOf("```"));
+	}
+	return s.trim();
+}
+
+/**
+ * Extract numbers from free text. Returns parsed floats, stripping commas.
+ * One of the few places where a regex is genuinely the right tool —
+ * matching number-like tokens in arbitrary prose.
+ */
+export function extractNumbers(text: string): number[] {
+	const matches = text.match(/[\d,]+\.?\d*/g);
+	if (!matches) return [];
+	return matches
+		.map((m) => Number.parseFloat(m.replaceAll(",", "")))
+		.filter((n) => !Number.isNaN(n));
+}
+
+/**
+ * Check if the leading character of an extracted answer is a specific letter.
+ * Handles "B", "(B)", "(B)", etc.
+ */
+export function leadingLetterIs(text: string, expected: string): boolean {
+	const trimmed = text.trimStart();
+	let i = 0;
+	if (trimmed[i] === "(") i++;
+	const ch = trimmed[i];
+	if (!ch) return false;
+	if (ch.toUpperCase() !== expected.toUpperCase()) return false;
+	// Verify it's a standalone letter, not start of a word
+	const next = trimmed[i + 1];
+	if (next === undefined || next === ")" || next === "." || next === "," ||
+		next === ";" || next === ":" || next === "!" || next === "?" ||
+		next === " " || next === "\t" || next === "\n") {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Check if `letter` appears as a standalone answer choice in text.
+ * Uses string scanning instead of regex. Checks common answer-indicating patterns:
+ * "(X)", "**X**", "*X*", "answer is X", "answer: X", "option X", "choice X",
+ * "select/choose/pick X", "X is correct/answer", letter at end of text.
+ */
+export function textContainsAnswerLetter(text: string, letter: string): boolean {
+	const upper = letter.toUpperCase();
+	const lower = letter.toLowerCase();
+
+	// (X) as a standalone choice
+	if (text.includes(`(${letter})`) || text.includes(`(${upper})`) || text.includes(`(${lower})`))
+		return true;
+
+	// **X** or *X*
+	if (text.includes(`**${upper}**`) || text.includes(`**${lower}**`)) return true;
+	if (
+		text.includes(`*${upper}*`) &&
+		!text.includes(`**${upper}*`) &&
+		!text.includes(`*${upper}**`)
+	)
+		return true;
+	if (
+		text.includes(`*${lower}*`) &&
+		!text.includes(`**${lower}*`) &&
+		!text.includes(`*${lower}**`)
+	)
+		return true;
+
+	const textLower = text.toLowerCase();
+	const letterLower = lower;
+
+	// Phrases that precede the letter: "answer is", "answer:", "option", "choice", "select", "choose", "pick", "go with"
+	const prefixPhrases = [
+		"answer is",
+		"answer:",
+		"option",
+		"choice",
+		"select",
+		"choose",
+		"pick",
+		"go with",
+	];
+	for (const phrase of prefixPhrases) {
+		let pos = 0;
+		while (true) {
+			const idx = textLower.indexOf(phrase, pos);
+			if (idx === -1) break;
+			// Make sure it's at a word boundary (not "manswer")
+			if (idx > 0 && isWordChar(textLower[idx - 1]!)) {
+				pos = idx + 1;
+				continue;
+			}
+			let after = idx + phrase.length;
+			// skip whitespace and optional colon/parens
+			while (after < text.length && " \t:(".includes(text[after]!)) after++;
+			if (after < text.length && text[after]!.toUpperCase() === upper) {
+				// Verify it's standalone (not part of a word)
+				const nextCh = text[after + 1];
+				if (!nextCh || !isWordChar(nextCh)) return true;
+			}
+			pos = idx + 1;
+		}
+	}
+
+	// "X is correct" or "X is the answer" or "X is the correct answer"
+	const suffixPhrases = ["is correct", "is the correct", "is the answer"];
+	for (const phrase of suffixPhrases) {
+		const pattern = `${letterLower} ${phrase}`;
+		let pos = 0;
+		while (true) {
+			const idx = textLower.indexOf(pattern, pos);
+			if (idx === -1) break;
+			// Check word boundary before the letter
+			if (idx > 0 && isWordChar(textLower[idx - 1]!)) {
+				pos = idx + 1;
+				continue;
+			}
+			return true;
+		}
+	}
+
+	// Letter at end of text (last non-whitespace/punctuation)
+	const trimmed = text.trimEnd();
+	if (trimmed.length > 0) {
+		let end = trimmed.length - 1;
+		// Skip trailing punctuation: . ! ) ? ]
+		while (end >= 0 && ".!?)]".includes(trimmed[end]!)) end--;
+		if (end >= 0 && trimmed[end]!.toUpperCase() === upper) {
+			// Check it's standalone
+			if (end === 0 || !isWordChar(trimmed[end - 1]!)) return true;
+		}
+	}
+
+	return false;
 }
 
 /**

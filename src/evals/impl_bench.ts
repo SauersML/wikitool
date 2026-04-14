@@ -1,8 +1,8 @@
-// Implementation Benchmark — uses Claude API with server-side code execution
+// Implementation Benchmark — uses Agent SDK with local Bash/Write/Read tools
 //
 // Flow per algorithm:
-//   1. Sonnet implements the algorithm (with or without wiki tool) using code_execution sandbox
-//   2. Opus evaluates: reads the code, runs it in sandbox, grades on rubric
+//   1. Sonnet implements the algorithm (with or without wiki tool) using local file + bash tools
+//   2. Opus evaluates: reads the code, runs it locally, grades on rubric
 //
 // Usage:
 //   bun run src/evals/impl_bench.ts                       — print usage info
@@ -10,16 +10,17 @@
 //   bun run src/evals/impl_bench.ts run <index> --no-tool — without tool
 //   bun run src/evals/impl_bench.ts all                   — run all 20 in both modes
 
-import { mkdir } from "node:fs/promises";
-import type Anthropic from "@anthropic-ai/sdk";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-	CODE_EXECUTION_TOOL,
+	WIKI_TOOL_NAME,
 	createSeenContent,
-	createToolHandler,
+	createWikiMcpServer,
+	extractJson,
 	initLog,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	runAgent,
 	writeTsvResults,
 } from "./utils";
 
@@ -52,8 +53,8 @@ export interface RunResult {
 
 // --- Constants ---
 
-const SONNET = "claude-sonnet-4-6";
-const OPUS = "claude-opus-4-6";
+const IMPL_MODEL = "claude-haiku-4-5-20251001";
+const EVAL_MODEL = "claude-opus-4-6";
 
 export const QUESTIONS: AlgorithmQuestion[] = [
 	{
@@ -187,70 +188,66 @@ function sanitizeName(name: string): string {
 
 /** Find the last ```python (or any ```) code block in a string. */
 function lastCodeBlock(text: string): string | null {
-	const pyBlocks = [...text.matchAll(/```python\n([\s\S]*?)```/g)];
-	if (pyBlocks.length > 0) return pyBlocks.at(-1)![1]!.trim();
+	let lastPython: string | null = null;
+	let lastAny: string | null = null;
+	let searchFrom = 0;
 
-	const anyBlocks = [...text.matchAll(/```\n([\s\S]*?)```/g)];
-	if (anyBlocks.length > 0) return anyBlocks.at(-1)![1]!.trim();
+	while (true) {
+		const fenceStart = text.indexOf("```", searchFrom);
+		if (fenceStart === -1) break;
 
-	return null;
+		// Find end of the opening fence line
+		const lineEnd = text.indexOf("\n", fenceStart);
+		if (lineEnd === -1) break;
+
+		const fenceTag = text.slice(fenceStart + 3, lineEnd).trim();
+
+		// Find closing ```
+		const fenceClose = text.indexOf("\n```", lineEnd);
+		if (fenceClose === -1) {
+			searchFrom = lineEnd;
+			continue;
+		}
+
+		const content = text.slice(lineEnd + 1, fenceClose).trim();
+		if (fenceTag === "python") lastPython = content;
+		else if (fenceTag === "") lastAny = content;
+
+		searchFrom = fenceClose + 4;
+	}
+
+	return lastPython ?? lastAny;
 }
 
 /**
  * Extract Python code from the agent result.
- * 1. Scan the final answer (last text block) for the last fenced code block.
- * 2. If missing, scan ALL assistant text blocks in the conversation (newest first)
- *    — covers the case where the model wrote code via code_execution but didn't
- *    repeat it in its closing remarks.
- * 3. Last resort: return raw answer text (evaluator will flag it as broken).
+ * Scans the final answer then all assistant text blocks for the last fenced code block.
  */
-function extractCode(
-	answer: string,
-	messages: Anthropic.Messages.MessageParam[],
-): string {
-	// 1. Final answer text
+function extractCode(answer: string, assistantTexts: string[]): string {
 	const fromAnswer = lastCodeBlock(answer);
 	if (fromAnswer) return fromAnswer;
 
-	// 2. Scan all assistant text blocks, newest first
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i]!;
-		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-		const blocks = msg.content as Array<{ type: string; text?: string }>;
-		for (let j = blocks.length - 1; j >= 0; j--) {
-			const b = blocks[j]!;
-			if (b.type === "text" && b.text) {
-				const code = lastCodeBlock(b.text);
-				if (code) return code;
-			}
-		}
+	for (let i = assistantTexts.length - 1; i >= 0; i--) {
+		const code = lastCodeBlock(assistantTexts[i]!);
+		if (code) return code;
 	}
 
-	// 3. Last resort
 	return answer;
 }
 
-// --- Implementation step (Sonnet via API + code_execution) ---
+// --- Implementation step (Sonnet via Agent SDK + Bash/Write) ---
 
 async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	const q = QUESTIONS[index]!;
 	const mode = useTool ? "with-tool" : "no-tool";
+	const workDir = await mkdtemp(join(tmpdir(), `impl-${sanitizeName(q.name)}-`));
 
-	const toolInstruction = useTool
-		? `You have access to a Wikipedia search tool. Use it to look up the Wikipedia article "${q.article}" for algorithm details before implementing.`
-		: "Do NOT use the Wikipedia search tool. Implement purely from your own knowledge.";
-
-	const system = [
-		"You are an expert Python programmer. You have access to a code execution sandbox where you can write and run Python code.",
-		toolInstruction,
-	].join("\n");
-
-	const userMessage = [
+	const prompt = [
 		q.prompt,
 		"",
-		"Create a complete, standalone Python implementation.",
+		`Create a single file called \`${sanitizeName(q.name)}.py\` with your complete implementation.`,
 		"Include a test/demo in an `if __name__ == '__main__':` block that exercises the main functionality and prints results.",
-		"Use the code execution sandbox to write and test the code. Make sure it runs without errors.",
+		"Write the file, then run it to make sure it works without errors.",
 		"",
 		"IMPORTANT: After you are done, output the complete final Python code in your response as a single ```python fenced code block.",
 	].join("\n");
@@ -258,27 +255,46 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	console.log(`\n[${index}] ${q.name} (${mode})`);
 	console.log(`  Launching Sonnet...`);
 
-	const tools: Anthropic.Messages.ToolUnion[] = [CODE_EXECUTION_TOOL];
-	if (useTool) tools.push(WIKI_TOOL);
+	const builtinTools = ["Write", "Bash"];
+	const allowedTools = ["Write", "Bash"];
+	const mcpServers: Record<string, ReturnType<typeof createWikiMcpServer>> = {};
 
-	const result = await runAgentLoop({
-		system,
-		userMessage,
-		tools,
-		toolHandler: useTool ? createToolHandler(createSeenContent()) : undefined,
-		model: SONNET,
-		maxTokens: 16384,
+	if (useTool) {
+		mcpServers.wiki = createWikiMcpServer({ seen: createSeenContent() });
+		allowedTools.push(WIKI_TOOL_NAME);
+	}
+
+	const result = await runAgent({
+		prompt,
+		model: IMPL_MODEL,
+		builtinTools,
+		allowedTools,
+		mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+		cwd: workDir,
 		maxTurns: 50,
 	});
 
-	const code = extractCode(result.answer, result.messages);
+	const code = extractCode(result.answer, result.assistantTexts);
 
 	console.log(`  Sonnet done: ${result.turns} turns, tool_used=${result.usedTool}`);
 
-	// Save logs
+	// Save logs — full conversation, not just final answer
 	const logDir = `${import.meta.dir}/../../logs`;
 	await mkdir(logDir, { recursive: true });
-	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_sonnet.log`, result.answer);
+	const fullLog = JSON.stringify({
+		algorithm: q.name,
+		mode,
+		turns: result.turns,
+		usedTool: result.usedTool,
+		inputTokens: result.inputTokens,
+		outputTokens: result.outputTokens,
+		durationMs: result.durationMs,
+		costUsd: result.costUsd,
+		toolCalls: result.toolCalls,
+		assistantTexts: result.assistantTexts,
+		answer: result.answer,
+	}, null, 2);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_sonnet.json`, fullLog);
 	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_code.py`, code);
 
 	return {
@@ -292,26 +308,24 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 	};
 }
 
-// --- Evaluation step (Opus via API + code_execution) ---
+// --- Evaluation step (Opus via Agent SDK + Read/Write/Bash) ---
 
 async function evaluate(index: number, code: string, mode: string): Promise<GradeResult> {
 	const q = QUESTIONS[index]!;
+	const workDir = await mkdtemp(join(tmpdir(), `eval-${sanitizeName(q.name)}-`));
+	const pyFile = `${sanitizeName(q.name)}.py`;
 
-	const system =
-		"You are an expert Python evaluator. You have access to a code execution sandbox where you can write and run Python code.";
+	// Write the code to the eval directory so Opus can read and run it
+	await Bun.write(join(workDir, pyFile), code);
 
-	const userMessage = [
+	const prompt = [
 		`You are evaluating a Python implementation of ${q.name}.`,
 		"",
-		"Here is the implementation:",
-		"```python",
-		code,
-		"```",
-		"",
-		"1. Save this code to a file and run it with `python3`. Observe the output.",
-		"2. If it fails, note the error. Try to understand what went wrong.",
-		"3. Write a few additional test cases and run them to verify correctness.",
-		"4. Grade the implementation on this rubric (1-10 each):",
+		`1. Read the file \`${pyFile}\` in the current directory.`,
+		`2. Run it with \`python3 ${pyFile}\` and observe the output.`,
+		"3. If it fails, note the error. Try to understand what went wrong.",
+		"4. Write a few additional test cases and run them to verify correctness.",
+		"5. Grade the implementation on this rubric (1-10 each):",
 		"   - CORRECTNESS: Does it implement the algorithm correctly? Would it produce correct results on all valid inputs?",
 		"   - HELPFULNESS: Good docstrings, comments, examples? Clean, usable API?",
 		"   - ELEGANCE: Well-structured, Pythonic, avoids unnecessary complexity?",
@@ -325,18 +339,30 @@ async function evaluate(index: number, code: string, mode: string): Promise<Grad
 
 	console.log(`  Launching Opus evaluator...`);
 
-	const result = await runAgentLoop({
-		system,
-		userMessage,
-		tools: [CODE_EXECUTION_TOOL],
-		model: OPUS,
-		maxTokens: 16384,
+	const result = await runAgent({
+		prompt,
+		model: EVAL_MODEL,
+		builtinTools: ["Read", "Write", "Bash"],
+		allowedTools: ["Read", "Write", "Bash"],
+		cwd: workDir,
 		maxTurns: 50,
 	});
 
-	// Save Opus log
+	// Save Opus log — full conversation
 	const logDir = `${import.meta.dir}/../../logs`;
-	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.log`, result.answer);
+	const fullLog = JSON.stringify({
+		algorithm: q.name,
+		mode,
+		turns: result.turns,
+		inputTokens: result.inputTokens,
+		outputTokens: result.outputTokens,
+		durationMs: result.durationMs,
+		costUsd: result.costUsd,
+		toolCalls: result.toolCalls,
+		assistantTexts: result.assistantTexts,
+		answer: result.answer,
+	}, null, 2);
+	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.json`, fullLog);
 
 	console.log(`  Opus done: ${result.turns} turns`);
 
@@ -346,15 +372,15 @@ async function evaluate(index: number, code: string, mode: string): Promise<Grad
 // --- Grade parsing ---
 
 export function parseGradeFromOutput(output: string): GradeResult {
-	const jsonMatch = output.match(/\{[^{}]*"correctness"\s*:\s*\d+[^{}]*\}/s);
-	if (!jsonMatch) throw new Error(`No grade JSON found in output (${output.length} chars)`);
-	const parsed = JSON.parse(jsonMatch[0]);
+	const parsed = extractJson(output);
+	if (!parsed || !("correctness" in parsed))
+		throw new Error(`No grade JSON found in output (${output.length} chars)`);
 	const correctness = Number(parsed.correctness);
 	const helpfulness = Number(parsed.helpfulness);
 	const elegance = Number(parsed.elegance);
 	const completion = Number(parsed.completion);
 	if ([correctness, helpfulness, elegance, completion].some((n) => Number.isNaN(n))) {
-		throw new Error(`Grade JSON has non-numeric fields: ${jsonMatch[0].slice(0, 200)}`);
+		throw new Error(`Grade JSON has non-numeric fields: ${JSON.stringify(parsed).slice(0, 200)}`);
 	}
 	return {
 		correctness,
@@ -393,8 +419,8 @@ async function runOne(
 // --- Run all ---
 
 async function runAll(): Promise<void> {
-	console.log("Implementation Benchmark — Claude API + code_execution sandbox");
-	console.log(`Implement: ${SONNET} | Evaluate: ${OPUS}`);
+	console.log("Implementation Benchmark — Agent SDK + local Bash/Write/Read");
+	console.log(`Implement: ${IMPL_MODEL} | Evaluate: ${EVAL_MODEL}`);
 	console.log(`Algorithms: ${QUESTIONS.length}`);
 	console.log(`Modes: with-tool, no-tool`);
 	console.log("");
@@ -432,7 +458,7 @@ async function runAll(): Promise<void> {
 				String(g.completion),
 				String(total),
 				String(g.ran_successfully),
-				g.notes.replace(/\t/g, " ").replace(/\n/g, " "),
+				g.notes,
 			]);
 		}
 	}
@@ -467,7 +493,6 @@ async function runAll(): Promise<void> {
 		`  No tool:    mean score ${mean(noTool, 6).toFixed(1)}/40, ran ok ${noTool.filter((r) => r[7] === "true").length}/${noTool.length}`,
 	);
 
-	// Paired permutation test on algorithms that have both modes
 	const withScores: number[] = [];
 	const noScores: number[] = [];
 	for (const wt of withTool) {
@@ -488,10 +513,10 @@ async function runAll(): Promise<void> {
 // --- CLI ---
 
 function printUsage() {
-	console.log("Implementation Benchmark — Claude API + code_execution sandbox");
+	console.log("Implementation Benchmark — Agent SDK + local Bash/Write/Read");
 	console.log("");
-	console.log("  Sonnet implements algorithms using server-side code execution.");
-	console.log("  Opus evaluates: runs code in sandbox, writes tests, grades on rubric.");
+	console.log("  Sonnet implements algorithms using local file and bash tools.");
+	console.log("  Opus evaluates: reads code, runs it, writes tests, grades on rubric.");
 	console.log("");
 	console.log("Usage:");
 	console.log("  bun run src/evals/impl_bench.ts                          — print this help");

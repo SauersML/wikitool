@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
+		"build:chat": "bun build src/chat/main.ts --outfile=src/chat/main.bundle.txt --target=browser --minify --format=esm",
 		"test": "bun run index.ts",
 		"cf-typegen": "wrangler types",
 		"lint": "biome check .",
@@ -23,6 +24,7 @@
 		"typescript": "^5"
 	},
 	"dependencies": {
+		"@anthropic-ai/claude-agent-sdk": "^0.2.104",
 		"@anthropic-ai/sdk": "^0.88.0",
 		"agents": "^0.10.1",
 		"zod": "^4.3.6"

@@ -6,12 +6,14 @@
 
 import {
 	DEFAULT_MODEL,
+	createSeenContent,
+	createWikiMcpServer,
 	extractFinalAnswer,
 	initLog,
 	matchesAny,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -66,7 +68,7 @@ export const QUESTIONS: TriviaQuestion[] = [
 		question:
 			"Name the particle filtering method published in 1993 that applies Monte Carlo resampling algorithms in Bayesian statistical inference.",
 		answer: "Bootstrap filter",
-		acceptableAnswers: ["Bootstrap filter", "bootstrap filter"],
+		acceptableAnswers: ["Bootstrap filter"],
 		topic: "Statistics",
 		datasetIndex: 590,
 	},
@@ -161,7 +163,7 @@ export const QUESTIONS: TriviaQuestion[] = [
 		question:
 			"What pigment is responsible for the white markings on the European garden spider Araneus diadematus?",
 		answer: "Guanine",
-		acceptableAnswers: ["Guanine", "guanine"],
+		acceptableAnswers: ["Guanine"],
 		topic: "Biology",
 		datasetIndex: 1561,
 	},
@@ -176,7 +178,7 @@ export const QUESTIONS: TriviaQuestion[] = [
 		question:
 			"What was the name of the gold coin introduced in 1663 that was initially worth 20 shillings?",
 		answer: "Guinea",
-		acceptableAnswers: ["Guinea", "guinea"],
+		acceptableAnswers: ["Guinea"],
 		topic: "Numismatics",
 		datasetIndex: 1572,
 	},
@@ -254,20 +256,22 @@ async function runQuestion(
 	q: TriviaQuestion,
 	index: number,
 	mode: "with-tool" | "without-tool",
-	log: (entry: unknown) => Promise<void>,
 ) {
-	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
-	const result = await runAgentLoop(
-		{
-			system: SYSTEM_PROMPT,
-			userMessage: q.question,
-			tools,
-		},
-		log,
-	);
+	const agentOpts: Parameters<typeof runAgent>[0] = {
+		system: SYSTEM_PROMPT,
+		prompt: q.question,
+	};
+
+	if (mode === "with-tool") {
+		const seen = createSeenContent();
+		const wikiServer = createWikiMcpServer({ seen });
+		agentOpts.mcpServers = { wiki: wikiServer };
+		agentOpts.allowedTools = [WIKI_TOOL_NAME];
+	}
+
+	const result = await runAgent(agentOpts);
 
 	const isCorrect = judge(q, result.answer);
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
@@ -283,7 +287,7 @@ async function runQuestion(
 		mode,
 		usedTool: String(result.usedTool),
 		toolQueries,
-		modelAnswer: result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+		modelAnswer: result.answer,
 		isCorrect: String(isCorrect),
 		turns: String(result.turns),
 		inputTokens: String(result.inputTokens),
@@ -310,7 +314,7 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("wiki_trivia");
+	const { path: logPath } = await initLog("wiki_trivia");
 
 	const headers = [
 		"question",
@@ -330,7 +334,7 @@ async function main() {
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
+			const result = await runQuestion(q, i, mode);
 			rows.push([
 				result.question,
 				result.expectedAnswer,

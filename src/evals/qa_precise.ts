@@ -4,13 +4,15 @@
 // Usage: bun src/evals/qa_precise.ts [questionIndex]
 
 import {
+	createSeenContent,
+	createWikiMcpServer,
 	DEFAULT_MODEL,
+	extractJson,
 	GRADER_MODEL,
 	initLog,
 	pairedPermutationTest,
-	runAgentLoop,
-	WEB_SEARCH_TOOL,
-	WIKI_TOOL,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -133,12 +135,9 @@ export function parseGradeResponse(raw: string): GradeResult {
 		// Not top-level JSON — try extracting embedded JSON object
 	}
 
-	const jsonMatch = raw.match(/\{[^}]*\}/);
-	if (jsonMatch) {
-		const parsed = JSON.parse(jsonMatch[0]);
-		if (typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
-			return { correct: parsed.correct, quality: parsed.quality };
-		}
+	const parsed = extractJson(raw);
+	if (parsed && typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
+		return { correct: parsed.correct as boolean, quality: parsed.quality as number };
 	}
 
 	throw new Error(`Failed to parse grade response: ${raw.slice(0, 200)}`);
@@ -147,12 +146,12 @@ export function parseGradeResponse(raw: string): GradeResult {
 // --- Grading via Sonnet API + web search ---
 
 async function gradeWithSonnet(prompt: string): Promise<string> {
-	const result = await runAgentLoop({
+	const result = await runAgent({
 		system: "You are an expert evaluator. Use web search to verify facts before grading.",
-		userMessage: prompt,
-		tools: [WEB_SEARCH_TOOL],
+		prompt,
+		builtinTools: ["WebSearch"],
+		allowedTools: ["WebSearch"],
 		model: GRADER_MODEL,
-		maxTokens: 1024,
 		maxTurns: 10,
 	});
 	return result.answer.trim();
@@ -177,7 +176,7 @@ async function main() {
 	);
 	console.log("");
 
-	const { log } = await initLog("qa_precise");
+	await initLog("qa_precise");
 
 	const rows: string[][] = [];
 	const withToolResults: { correct: boolean; quality: number }[] = [];
@@ -192,14 +191,13 @@ async function main() {
 
 		// --- With tool ---
 		console.log("  Running WITH tool...");
-		const withTool = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				tools: [WIKI_TOOL],
-			},
-			log,
-		);
+		const wikiServer = createWikiMcpServer({ seen: createSeenContent() });
+		const withTool = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+			mcpServers: { wiki: wikiServer },
+			allowedTools: [WIKI_TOOL_NAME],
+		});
 
 		const toolQueries = withTool.toolCalls
 			.map((tc) => (tc.input["query"] as string) ?? "")
@@ -221,8 +219,8 @@ async function main() {
 			q.domain,
 			"with_tool",
 			String(withTool.usedTool),
-			toolQueries.replace(/\t/g, " ").replace(/\n/g, " "),
-			withTool.answer.slice(0, 200).replace(/\t/g, " ").replace(/\n/g, " "),
+			toolQueries,
+			withTool.answer.slice(0, 200),
 			String(withGrade.correct),
 			String(withGrade.quality),
 			String(withTool.turns),
@@ -232,14 +230,10 @@ async function main() {
 
 		// --- Without tool ---
 		console.log("  Running WITHOUT tool...");
-		const withoutTool = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				tools: [],
-			},
-			log,
-		);
+		const withoutTool = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+		});
 
 		const withoutGradePrompt = buildGradePrompt(q.question, q.expected, withoutTool.answer);
 		const withoutGradeRaw = await gradeWithSonnet(withoutGradePrompt);
@@ -259,7 +253,7 @@ async function main() {
 			"without_tool",
 			"false",
 			"",
-			withoutTool.answer.slice(0, 200).replace(/\t/g, " ").replace(/\n/g, " "),
+			withoutTool.answer.slice(0, 200),
 			String(withoutGrade.correct),
 			String(withoutGrade.quality),
 			String(withoutTool.turns),

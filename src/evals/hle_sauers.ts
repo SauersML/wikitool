@@ -5,12 +5,19 @@
 
 import {
 	DEFAULT_MODEL,
+	createSeenContent,
+	createWikiMcpServer,
 	extractFinalAnswer,
+	extractJson,
+	extractNumbers,
 	gradeWithModel,
 	initLog,
+	leadingLetterIs,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	parseTsvRows,
+	runAgent,
+	textContainsAnswerLetter,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -28,19 +35,12 @@ export interface HLEQuestion {
 // --- Loading ---
 
 function parseTsv(content: string): HLEQuestion[] {
-	const lines = content
-		.replace(/\r\n/g, "\n")
-		.replace(/\r/g, "\n")
-		.split("\n")
-		.filter((line) => line.trim().length > 0);
-
+	const rows = parseTsvRows(content);
 	// Skip header
-	const dataLines = lines.slice(1);
-
-	return dataLines.map((line) => {
-		const [question, answer, answerType, rationale, subject, category] = line.split("\t");
+	return rows.slice(1).map((fields) => {
+		const [question, answer, answerType, rationale, subject, category] = fields;
 		if (!question || !answer || !answerType) {
-			throw new Error(`Invalid TSV row: ${line.slice(0, 100)}...`);
+			throw new Error(`Invalid TSV row: ${fields.join("\t").slice(0, 100)}...`);
 		}
 		if (answerType !== "multipleChoice" && answerType !== "exactMatch") {
 			throw new Error(`Invalid answer_type: "${answerType}"`);
@@ -106,56 +106,21 @@ export function judge(question: HLEQuestion, response: string): boolean {
 
 export function judgeMultipleChoice(response: string, expectedLetter: string): boolean {
 	const letter = expectedLetter.trim();
-	const escaped = escapeRegex(letter);
 
 	// Try extracting from an explicit ANSWER line first
 	const finalAnswer = extractFinalAnswer(response);
 	if (finalAnswer !== null) {
 		// For single-letter answers: prefer the leading letter of the extracted text.
 		// "ANSWER: B" → B, "ANSWER: (B)" → B, "ANSWER: B, because..." → B.
-		// This avoids matching a letter mentioned mid-explanation like
-		// "ANSWER: C is wrong so B" being scored correct for C.
-		const leadMatch = finalAnswer.match(/^\s*\(?([A-Za-z])\)?(?:\s*$|[.,;:!?\s)])/);
-		if (leadMatch) {
-			return leadMatch[1]!.toUpperCase() === letter.toUpperCase();
-		}
+		if (leadingLetterIs(finalAnswer, letter)) return true;
 		// No clear leading letter — check for standalone letter anywhere in extracted text
-		const extractedEscaped = escapeRegex(letter);
-		const extractedPatterns = [
-			new RegExp(`^\\s*\\(?${extractedEscaped}\\)?\\s*$`, "i"),
-			new RegExp(`(?:^|[\\s(])${extractedEscaped}(?=$|[\\s.,;:!?)])`, "i"),
-		];
-		return extractedPatterns.some((p) => p.test(finalAnswer));
+		return textContainsAnswerLetter(finalAnswer, letter);
 	}
 
 	// No explicit ANSWER: line found. Search only the tail of the response
 	// to avoid matching the correct letter mentioned during reasoning.
 	const tail = responseTail(response);
-
-	const patterns = [
-		// "answer is X", "answer: X", "answer is (X)"
-		new RegExp(`answer\\s+is\\s*:?\\s*\\(?${escaped}\\)?`, "i"),
-		// "Answer: X" or "answer:X"
-		new RegExp(`answer\\s*:\\s*\\(?${escaped}\\)?(?=$|[\\s.,;:!?)])`, "i"),
-		// "(X)" as a standalone choice
-		new RegExp(`\\(${escaped}\\)`, "i"),
-		// "option X" or "choice X"
-		new RegExp(`(?:option|choice)\\s+${escaped}(?=$|[\\s.,;:!?)])`, "i"),
-		// "X." or "X," or "X)" at start of line (common for listing the answer)
-		new RegExp(`^\\s*${escaped}[.,;:)]`, "m"),
-		// "select X" or "choose X" or "go with X" or "pick X"
-		new RegExp(`(?:select|choose|go\\s+with|pick)\\s+${escaped}(?=$|[\\s.,;:!?)])`, "i"),
-		// "is X." or "is X," at end of sentence
-		new RegExp(`is\\s+${escaped}(?=$|[\\s.,;:!?)])`, "i"),
-		// Bold/emphasized answer: **X** or *X*
-		new RegExp(`\\*\\*${escaped}\\*\\*|\\*${escaped}\\*`),
-		// "X is correct" or "X is the correct" or "X is the answer"
-		new RegExp(`(?:^|[\\s(])${escaped}\\s+is\\s+(?:the\\s+)?(?:correct|answer)`, "im"),
-		// Letter at end of response (last non-whitespace chars)
-		new RegExp(`${escaped}[.!)?]*\\s*$`, "m"),
-	];
-
-	return patterns.some((p) => p.test(tail));
+	return textContainsAnswerLetter(tail, letter);
 }
 
 export function judgeExactMatch(response: string, expectedAnswer: string): boolean {
@@ -181,16 +146,6 @@ export function judgeExactMatch(response: string, expectedAnswer: string): boole
 	}
 
 	return false;
-}
-
-export function extractNumbers(text: string): number[] {
-	const matches = text.match(/[\d,]+\.?\d*/g);
-	if (!matches) return [];
-	return matches.map((m) => Number.parseFloat(m.replace(/,/g, ""))).filter((n) => !Number.isNaN(n));
-}
-
-function escapeRegex(str: string): string {
-	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // --- Reasoning grading ---
@@ -230,9 +185,8 @@ Grade the model's REASONING (not just the final answer) on a 1-5 scale:
 Respond ONLY with JSON: {"score": N, "notes": "one sentence explanation"}`;
 
 	const raw = await gradeWithModel(prompt);
-	const match = raw.match(/\{[^{}]*"score"\s*:\s*\d[^{}]*\}/);
-	if (!match) throw new Error(`Failed to parse reasoning grade: ${raw.slice(0, 200)}`);
-	const parsed = JSON.parse(match[0]);
+	const parsed = extractJson(raw);
+	if (!parsed) throw new Error(`Failed to parse reasoning grade: ${raw.slice(0, 200)}`);
 	const score = Number(parsed.score);
 	if (score < 1 || score > 5) throw new Error(`Reasoning score out of range: ${score}`);
 	return { score, notes: String(parsed.notes) };
@@ -244,20 +198,22 @@ async function runQuestion(
 	q: HLEQuestion,
 	index: number,
 	mode: "with-tool" | "without-tool",
-	log: (entry: unknown) => Promise<void>,
 ) {
-	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
-	const result = await runAgentLoop(
-		{
-			system: SYSTEM_PROMPT,
-			userMessage: q.question,
-			tools,
-		},
-		log,
-	);
+	const agentOpts: Parameters<typeof runAgent>[0] = {
+		system: SYSTEM_PROMPT,
+		prompt: q.question,
+	};
+
+	if (mode === "with-tool") {
+		const seen = createSeenContent();
+		const wikiServer = createWikiMcpServer({ seen });
+		agentOpts.mcpServers = { wiki: wikiServer };
+		agentOpts.allowedTools = [WIKI_TOOL_NAME];
+	}
+
+	const result = await runAgent(agentOpts);
 
 	const isCorrect = judge(q, result.answer);
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
@@ -278,10 +234,10 @@ async function runQuestion(
 		mode,
 		usedTool: String(result.usedTool),
 		toolQueries,
-		modelAnswer: result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+		modelAnswer: result.answer,
 		isCorrect: String(isCorrect),
 		reasoningScore: String(reasoning.score),
-		reasoningNotes: reasoning.notes.replace(/\t/g, " ").replace(/\n/g, " "),
+		reasoningNotes: reasoning.notes,
 		turns: String(result.turns),
 		inputTokens: String(result.inputTokens),
 		outputTokens: String(result.outputTokens),
@@ -310,7 +266,7 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("hle_sauers");
+	const { path: logPath } = await initLog("hle_sauers");
 
 	const headers = [
 		"question",
@@ -335,7 +291,7 @@ async function main() {
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
+			const result = await runQuestion(q, i, mode);
 			rows.push([
 				result.question,
 				result.answer,

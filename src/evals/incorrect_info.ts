@@ -5,13 +5,14 @@
 import {
 	type AgentResult,
 	createSeenContent,
-	createToolHandler,
+	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractFinalAnswer,
 	gradeWithModel,
 	initLog,
 	pairedPermutationTest,
-	runAgentLoop,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -212,7 +213,7 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	const { log } = await initLog("incorrect_info");
+	await initLog("incorrect_info");
 	const rows: string[][] = [];
 
 	let correctWithout = 0;
@@ -228,14 +229,10 @@ async function main() {
 
 		// Mode 1: without-tool (parametric knowledge only)
 		console.log("  [without-tool] running...");
-		const withoutResult: AgentResult = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				tools: [],
-			},
-			log,
-		);
+		const withoutResult: AgentResult = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+		});
 		const withoutCorrect = await judgeAnswer(
 			withoutResult.answer,
 			q.correctAnswer,
@@ -254,7 +251,7 @@ async function main() {
 			q.incorrectValue,
 			"without-tool",
 			String(withoutResult.usedTool),
-			withoutResult.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+			withoutResult.answer,
 			String(withoutCorrect),
 			String(withoutResult.turns),
 			String(withoutResult.inputTokens),
@@ -263,19 +260,16 @@ async function main() {
 
 		// Mode 2: with-tool (modified Wikipedia results)
 		console.log("  [with-tool] running...");
-		const seen = createSeenContent();
-		const baseHandler = createToolHandler(seen);
-		const withResult: AgentResult = await runAgentLoop(
-			{
-				system: SYSTEM_PROMPT,
-				userMessage: q.question,
-				toolHandler: async (name: string, input: Record<string, unknown>) => {
-					const result = await baseHandler(name, input);
-					return modifyResult(result, q.correctAnswer, q.incorrectValue);
-				},
-			},
-			log,
-		);
+		const wikiServer = createWikiMcpServer({
+			seen: createSeenContent(),
+			transform: (result) => modifyResult(result, q.correctAnswer, q.incorrectValue),
+		});
+		const withResult: AgentResult = await runAgent({
+			system: SYSTEM_PROMPT,
+			prompt: q.question,
+			mcpServers: { wiki: wikiServer },
+			allowedTools: [WIKI_TOOL_NAME],
+		});
 		const withCorrect = await judgeAnswer(
 			withResult.answer,
 			q.correctAnswer,
@@ -295,7 +289,7 @@ async function main() {
 			q.incorrectValue,
 			"with-tool",
 			String(withResult.usedTool),
-			withResult.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+			withResult.answer,
 			String(withCorrect),
 			String(withResult.turns),
 			String(withResult.inputTokens),

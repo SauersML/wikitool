@@ -3,7 +3,7 @@
 // Usage: bun run src/evals/run_all.ts
 //
 // Pass --parallel to run evals concurrently.
-// All evals use the Claude API directly (no Claude Code CLI dependency).
+// All evals use the Claude Agent SDK (no direct CLI dependency).
 
 import { spawn } from "node:child_process";
 
@@ -38,7 +38,7 @@ function runEval(name: string): Promise<{ name: string; exitCode: number; durati
 async function main() {
 	const parallel = process.argv.includes("--parallel");
 	console.log(`\nRunning ${EVALS.length} evals ${parallel ? "in parallel" : "sequentially"}...\n`);
-	console.log("(All evals use the Claude API directly — ensure ANTHROPIC_API_KEY is set)\n");
+	console.log("(All evals use the Claude Agent SDK — ensure ANTHROPIC_API_KEY is set)\n");
 
 	const start = performance.now();
 	let results: { name: string; exitCode: number; durationMs: number }[];

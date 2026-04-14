@@ -6,10 +6,12 @@
 import {
 	type AgentResult,
 	DEFAULT_MODEL,
+	createSeenContent,
+	createWikiMcpServer,
 	gradeWithModel,
 	initLog,
-	runAgentLoop,
-	WIKI_TOOL,
+	runAgent,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -88,18 +90,21 @@ export interface QuestionResult {
 async function runQuestion(
 	question: string,
 	mode: "with-tool" | "without-tool",
-	log: (entry: unknown) => Promise<void>,
 ): Promise<QuestionResult> {
-	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-	const result = await runAgentLoop(
-		{
-			system: SYSTEM_PROMPT,
-			userMessage: question,
-			tools,
-			model: DEFAULT_MODEL,
-		},
-		log,
-	);
+	const agentOpts: Parameters<typeof runAgent>[0] = {
+		system: SYSTEM_PROMPT,
+		prompt: question,
+		model: DEFAULT_MODEL,
+	};
+
+	if (mode === "with-tool") {
+		const seen = createSeenContent();
+		const wikiServer = createWikiMcpServer({ seen });
+		agentOpts.mcpServers = { wiki: wikiServer };
+		agentOpts.allowedTools = [WIKI_TOOL_NAME];
+	}
+
+	const result = await runAgent(agentOpts);
 
 	const toolQueries = result.toolCalls.map((tc) => String(tc.input["query"] ?? ""));
 
@@ -132,7 +137,7 @@ async function main() {
 	);
 	console.log();
 
-	const { log, path: logPath } = await initLog("good_recency");
+	const { path: logPath } = await initLog("good_recency");
 	console.log(`Log: ${logPath}\n`);
 
 	const allResults: QuestionResult[] = [];
@@ -143,7 +148,7 @@ async function main() {
 
 		// With tool
 		console.log("  mode: with-tool ...");
-		const withTool = await runQuestion(q, "with-tool", log);
+		const withTool = await runQuestion(q, "with-tool");
 		console.log(
 			`    used_tool=${withTool.result.usedTool}  answered=${withTool.answered}  turns=${withTool.result.turns}`,
 		);
@@ -155,7 +160,7 @@ async function main() {
 
 		// Without tool
 		console.log("  mode: without-tool ...");
-		const withoutTool = await runQuestion(q, "without-tool", log);
+		const withoutTool = await runQuestion(q, "without-tool");
 		console.log(`    answered=${withoutTool.answered}  turns=${withoutTool.result.turns}`);
 		console.log(`    answer: ${withoutTool.result.answer.slice(0, 200)}`);
 		allResults.push(withoutTool);
@@ -181,7 +186,7 @@ async function main() {
 		r.mode,
 		String(r.result.usedTool),
 		r.toolQueries.join("; "),
-		r.result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+		r.result.answer,
 		String(r.answered),
 		String(r.result.turns),
 		String(r.result.inputTokens),

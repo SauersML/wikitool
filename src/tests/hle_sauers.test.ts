@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
-	extractNumbers,
 	type HLEQuestion,
 	judge,
 	judgeExactMatch,
 	judgeMultipleChoice,
 	QUESTIONS,
 } from "../evals/hle_sauers";
+import { extractNumbers } from "../evals/utils";
 
 describe("hle_sauers eval", () => {
 	describe("question loading", () => {

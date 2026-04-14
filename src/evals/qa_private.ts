@@ -4,13 +4,20 @@
 // Usage: bun src/evals/qa_private.ts [questionIndex]
 
 import {
+	createSeenContent,
+	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractFinalAnswer,
+	extractJson,
+	extractNumbers,
 	gradeWithModel,
 	initLog,
+	leadingLetterIs,
 	pairedPermutationTest,
-	runAgentLoop,
-	WIKI_TOOL,
+	parseTsvRows,
+	runAgent,
+	textContainsAnswerLetter,
+	WIKI_TOOL_NAME,
 	writeTsvResults,
 } from "./utils";
 
@@ -42,20 +49,16 @@ Do not write anything after the ANSWER line.`;
 // --- Load questions from TSV ---
 
 function parseTsv(content: string): PrivateQuestion[] {
-	const lines = content.split("\n").filter((line) => line.trim().length > 0);
+	const rows = parseTsvRows(content);
 	// Skip header row
-	const dataLines = lines.slice(1);
-	return dataLines.map((line) => {
-		const fields = line.split("\t");
-		return {
-			question: fields[0] ?? "",
-			answer: fields[1] ?? "",
-			answerType: (fields[2] ?? "") as "multipleChoice" | "exactMatch",
-			rationale: fields[3] ?? "",
-			subject: fields[4] ?? "",
-			category: fields[5] ?? "",
-		};
-	});
+	return rows.slice(1).map((fields) => ({
+		question: fields[0] ?? "",
+		answer: fields[1] ?? "",
+		answerType: (fields[2] ?? "") as "multipleChoice" | "exactMatch",
+		rationale: fields[3] ?? "",
+		subject: fields[4] ?? "",
+		category: fields[5] ?? "",
+	}));
 }
 
 const tsvPath = `${import.meta.dir}/../../datasets/QA bench - Private questions.tsv`;
@@ -87,19 +90,9 @@ export function judgeMultipleChoice(response: string, expectedAnswer: string): b
 		}
 		// For single-letter answers: prefer the leading letter of the extracted text.
 		// "ANSWER: B" → B, "ANSWER: (B)" → B, "ANSWER: B, because..." → B.
-		// This avoids matching a letter mentioned mid-explanation like
-		// "ANSWER: C is wrong so B" being scored correct for C.
-		const leadMatch = finalAnswer.match(/^\s*\(?([A-Za-z])\)?(?:\s*$|[.,;:!?\s)])/);
-		if (leadMatch) {
-			return leadMatch[1]!.toUpperCase() === expectedAnswer.toUpperCase();
-		}
+		if (leadingLetterIs(finalAnswer, expectedAnswer)) return true;
 		// No clear leading letter — check for standalone letter anywhere in extracted text
-		const escaped = expectedAnswer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		const extractedPatterns = [
-			new RegExp(`^\\s*\\(?${escaped}\\)?\\s*$`, "i"),
-			new RegExp(`(?:^|[\\s(])${escaped}(?=$|[\\s.,;:!?)])`, "i"),
-		];
-		return extractedPatterns.some((p) => p.test(finalAnswer));
+		return textContainsAnswerLetter(finalAnswer, expectedAnswer);
 	}
 
 	// No explicit ANSWER: line found. Search only the tail of the response
@@ -110,10 +103,8 @@ export function judgeMultipleChoice(response: string, expectedAnswer: string): b
 	if (expectedAnswer.includes(",")) {
 		return tail.includes(expectedAnswer);
 	}
-	// For single-letter answers, check for standalone letter (not part of a word).
-	const escaped = expectedAnswer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const regex = new RegExp(`(?:^|\\b|\\s|\\()${escaped}(?:\\b|\\s|\\.|,|\\)|$)`, "i");
-	return regex.test(tail);
+	// For single-letter answers, use string-based answer detection.
+	return textContainsAnswerLetter(tail, expectedAnswer);
 }
 
 export function judgeExactMatch(response: string, expectedAnswer: string): boolean {
@@ -138,13 +129,9 @@ export function judgeExactMatch(response: string, expectedAnswer: string): boole
 	// For numeric answers, try parsing and comparing with tolerance
 	const expectedNum = Number.parseFloat(expectedAnswer);
 	if (!Number.isNaN(expectedNum)) {
-		const numMatches = textToJudge.match(/[\d,]+\.?\d*/g);
-		if (numMatches) {
-			const numbers = numMatches
-				.map((m) => Number.parseFloat(m.replace(/,/g, "")))
-				.filter((n) => !Number.isNaN(n));
-			// Allow a small tolerance for numeric comparison
-			return numbers.some((n) => Math.abs(n - expectedNum) <= Math.abs(expectedNum) * 0.01);
+		const numbers = extractNumbers(textToJudge);
+		if (numbers.some((n) => Math.abs(n - expectedNum) <= Math.abs(expectedNum) * 0.01)) {
+			return true;
 		}
 	}
 
@@ -188,9 +175,8 @@ Grade the model's REASONING (not just the final answer) on a 1-5 scale:
 Respond ONLY with JSON: {"score": N, "notes": "one sentence explanation"}`;
 
 	const raw = await gradeWithModel(prompt);
-	const match = raw.match(/\{[^{}]*"score"\s*:\s*\d[^{}]*\}/);
-	if (!match) throw new Error(`Failed to parse reasoning grade: ${raw.slice(0, 200)}`);
-	const parsed = JSON.parse(match[0]);
+	const parsed = extractJson(raw);
+	if (!parsed) throw new Error(`Failed to parse reasoning grade: ${raw.slice(0, 200)}`);
 	const score = Number(parsed.score);
 	if (score < 1 || score > 5) throw new Error(`Reasoning score out of range: ${score}`);
 	return { score, notes: String(parsed.notes) };
@@ -209,20 +195,23 @@ async function runQuestion(
 	q: PrivateQuestion,
 	index: number,
 	mode: "with-tool" | "without-tool",
-	log: (entry: unknown) => Promise<void>,
 ) {
-	const tools = mode === "with-tool" ? [WIKI_TOOL] : [];
-
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
-	const result = await runAgentLoop(
-		{
-			system: SYSTEM_PROMPT,
-			userMessage: q.question,
-			tools,
-		},
-		log,
-	);
+	const agentOpts: Parameters<typeof runAgent>[0] =
+		mode === "with-tool"
+			? {
+					system: SYSTEM_PROMPT,
+					prompt: q.question,
+					mcpServers: { wiki: createWikiMcpServer({ seen: createSeenContent() }) },
+					allowedTools: [WIKI_TOOL_NAME],
+				}
+			: {
+					system: SYSTEM_PROMPT,
+					prompt: q.question,
+				};
+
+	const result = await runAgent(agentOpts);
 
 	const isCorrect = judge(q, result.answer);
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
@@ -242,10 +231,10 @@ async function runQuestion(
 		mode,
 		usedTool: String(result.usedTool),
 		toolQueries,
-		modelAnswer: result.answer.replace(/\t/g, " ").replace(/\n/g, " "),
+		modelAnswer: result.answer,
 		isCorrect: String(isCorrect),
 		reasoningScore: String(reasoning.score),
-		reasoningNotes: reasoning.notes.replace(/\t/g, " ").replace(/\n/g, " "),
+		reasoningNotes: reasoning.notes,
 		turns: String(result.turns),
 		inputTokens: String(result.inputTokens),
 		outputTokens: String(result.outputTokens),
@@ -272,7 +261,7 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("qa_private");
+	const { path: logPath } = await initLog("qa_private");
 
 	const headers = [
 		"question",
@@ -297,7 +286,7 @@ async function main() {
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
+			const result = await runQuestion(q, i, mode);
 			rows.push([
 				result.question,
 				result.answer,

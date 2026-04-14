@@ -3,6 +3,49 @@ const WIKI_REST = "https://en.wikipedia.org/api/rest_v1";
 const CHAR_LIMIT = 4000;
 const UA = "WikiSearchMCP/1.0 (https://wikisearch.sauerslabs.workers.dev; sauerslabs@gmail.com)";
 
+// --- HTML entity + whitespace helpers ---
+
+const HTML_ENTITIES: Record<string, string> = {
+	"&nbsp;": " ",
+	"&thinsp;": " ",
+	"&ensp;": " ",
+	"&emsp;": " ",
+	"&ndash;": "\u2013",
+	"&mdash;": "\u2014",
+	"&minus;": "\u2212",
+	"&#x20;": " ",
+	"&#x200b;": "",
+	"&#x23;": "#",
+	"&#91;": "[",
+	"&#93;": "]",
+	"&amp;": "&",
+	"&lt;": "<",
+	"&gt;": ">",
+	"&quot;": '"',
+};
+
+/** Decode named/numeric HTML entities using a lookup table. */
+function decodeHtmlEntities(text: string): string {
+	let t = text;
+	for (const [entity, char] of Object.entries(HTML_ENTITIES)) {
+		t = t.replaceAll(entity, char);
+	}
+	// Remaining numeric entities: &#123; and &#xAB;
+	t = t.replaceAll(/&#\d+;/g, "");
+	t = t.replaceAll(/&#x[\da-fA-F]+;/g, "");
+	return t;
+}
+
+/** Collapse runs of whitespace to a single space and trim. */
+function collapseWhitespace(text: string): string {
+	return text.replaceAll(/\s+/g, " ").trim();
+}
+
+/** Normalize en-dashes, em-dashes, minus signs, etc. to plain hyphens. */
+function normalizeDashes(s: string): string {
+	return s.replaceAll(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-");
+}
+
 // --- Types ---
 
 interface TitleResult {
@@ -20,7 +63,6 @@ interface SearchHit {
 
 interface SearchResponse {
 	hits: SearchHit[];
-	totalHits: number;
 	suggestion: string | undefined;
 }
 
@@ -39,9 +81,9 @@ interface PageData {
 // --- API ---
 
 async function lookupTitle(query: string): Promise<TitleResult | null> {
-	const encoded = encodeURIComponent(query.replace(/ /g, "_"));
+	const encoded = encodeURIComponent(query.replaceAll(" ", "_"));
 	const res = await fetch(`${WIKI_REST}/page/summary/${encoded}`, {
-		headers: { "User-Agent": UA, "Api-User-Agent": UA },
+		headers: { "Api-User-Agent": UA },
 	});
 	if (res.status === 404) return null;
 	if (!res.ok) throw new Error(`Title lookup failed: ${res.status}`);
@@ -67,24 +109,25 @@ async function fullTextSearch(query: string, limit = 10): Promise<SearchResponse
 		srinfo: "totalhits|suggestion",
 		format: "json",
 		formatversion: "2",
+		origin: "*",
 	});
 	const res = await fetch(`${WIKI_API}?${params}`, {
-		headers: { "User-Agent": UA, "Api-User-Agent": UA },
+		headers: { "Api-User-Agent": UA },
 	});
 	if (!res.ok) throw new Error(`Search failed: ${res.status}`);
 
 	// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
 	const data = (await res.json()) as any;
+	if (data.error) throw new Error(data.error.info ?? "Wikipedia search error");
 	return {
 		// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
-		hits: (data.query.search as any[]).map((r) => ({
+		hits: ((data.query?.search ?? []) as any[]).map((r) => ({
 			title: r.title as string,
 			snippet: (r.snippet as string).replace(/<[^>]*>/g, ""),
 			sectionTitle: ((r.sectiontitle as string) || "").replace(/<[^>]*>/g, ""),
 			wordcount: r.wordcount as number,
 		})),
-		totalHits: data.query.searchinfo?.totalhits ?? 0,
-		suggestion: data.query.searchinfo?.suggestion,
+		suggestion: data.query?.searchinfo?.suggestion,
 	};
 }
 
@@ -95,15 +138,17 @@ async function getPageContent(title: string): Promise<PageData> {
 		prop: "wikitext|sections",
 		format: "json",
 		formatversion: "2",
+		origin: "*",
 	});
 	const res = await fetch(`${WIKI_API}?${params}`, {
-		headers: { "User-Agent": UA, "Api-User-Agent": UA },
+		headers: { "Api-User-Agent": UA },
 	});
 	if (!res.ok) throw new Error(`Page fetch failed: ${res.status}`);
 
 	// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
 	const data = (await res.json()) as any;
 	if (data.error) throw new Error(data.error.info);
+	if (!data.parse?.wikitext) throw new Error(`No content for page: ${title}`);
 
 	// Resolve transcluded infoboxes (e.g. {{Infobox hafnium}}) before parsing
 	const wikitext = await resolveTranscludedInfobox(data.parse.title, data.parse.wikitext);
@@ -201,26 +246,20 @@ const TRANSCLUDED_INFOBOX_RE = /\{\{\s*[Ii]nfobox\s+([^{}|]+?)\s*\}\}/;
 
 function cleanInfoboxHtml(html: string): string {
 	let t = html;
+	// Strip category links before converting wikilinks
+	t = t.replace(/\[\[Category:[^\]]*\]\]/gi, "");
 	// Convert wikilinks: [[target|display]] → display, [[target]] → target
 	t = t.replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, "$2");
 	t = t.replace(/\[\[([^\]]*)\]\]/g, "$1");
-	// Strip HTML tags
+	// Convert <br> to separator, then strip remaining HTML tags
+	t = t.replace(/<br\s*\/?>/gi, ", ");
 	t = t.replace(/<[^>]*>/g, "");
 	// Decode common HTML entities
-	t = t.replace(/&nbsp;/g, " ");
-	t = t.replace(/&#x20;/g, " ");
-	t = t.replace(/&#x200b;/g, "");
-	t = t.replace(/&#x23;/g, "#");
-	t = t.replace(/&#91;/g, "[");
-	t = t.replace(/&#93;/g, "]");
-	t = t.replace(/&amp;/g, "&");
-	t = t.replace(/&lt;/g, "<");
-	t = t.replace(/&gt;/g, ">");
-	t = t.replace(/&quot;/g, '"');
-	t = t.replace(/&#\d+;/g, "");
-	t = t.replace(/&#x[\da-fA-F]+;/g, "");
+	t = decodeHtmlEntities(t);
+	// Strip leftover image/file wikitext syntax from expanded templates
+	t = t.replace(/frameless\|[^|]*(\|[^|]*)*/g, "");
 	// Collapse whitespace
-	t = t.replace(/\s+/g, " ").trim();
+	t = collapseWhitespace(t);
 	return t;
 }
 
@@ -254,9 +293,10 @@ async function resolveTranscludedInfobox(pageTitle: string, wikitext: string): P
 			prop: "wikitext",
 			format: "json",
 			formatversion: "2",
+			origin: "*",
 		});
 		const res = await fetch(`${WIKI_API}?${params}`, {
-			headers: { "User-Agent": UA, "Api-User-Agent": UA },
+			headers: { "Api-User-Agent": UA },
 		});
 		if (!res.ok) return wikitext;
 		// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response
@@ -463,10 +503,35 @@ function parseInfoboxContent(raw: string): string {
 		// Skip image/visual-related compound keys
 		if (
 			/image|img|photo|logo|map|flag|seal|shield|skyline|emblem|icon/i.test(keyNorm) &&
-			/size|caption|alt|_map|file|name/i.test(keyNorm)
+			/size|caption|alt|_map|file|name|class/i.test(keyNorm)
 		) {
 			continue;
 		}
+		// Skip CSS/layout class attributes
+		if (/_class[LR]?$/i.test(keyNorm) || /^(body|above|header|label|data)_?class/i.test(keyNorm)) {
+			continue;
+		}
+		// Skip comment/footnote fields
+		if (/_comment$/i.test(keyNorm) || /_footnote$/i.test(keyNorm)) continue;
+		// Skip database identifiers and chemical notation
+		if (
+			/^(pubchem|drugbank|chemspider(id)?|chembl|chebi|unii|kegg\d?|pdb.?ligand|iuphar.?ligand|medlineplus|dailymedid|cas.?number|stdinchi(key)?|smiles)$/i.test(
+				keyNorm,
+			)
+		) {
+			continue;
+		}
+		// Skip ATC classification codes
+		if (/^atc_(prefix|suffix)/i.test(keyNorm)) continue;
+		// Skip bare chemical formula components (single uppercase letter = element)
+		if (/^[A-Z]$/.test(rawKey.trim())) continue;
+		// Skip formatting/layout hints
+		if (/^(colspan|rowspan|group)/i.test(keyNorm)) continue;
+		// Skip meta/entry-label and demographics layout keys
+		if (/[_ ]entry$/i.test(keyNorm)) continue;
+		if (/^(demographics|blank[_ ]?(name|info))[_ ]?(sec|title|info)?/i.test(keyNorm)) continue;
+		// Skip military infobox layout keys
+		if (/^(campaignbox|combatant)\d*$/i.test(keyNorm)) continue;
 
 		// Clean the value
 		let val = rawValue;
@@ -481,8 +546,18 @@ function parseInfoboxContent(raw: string): string {
 		val = val.replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "");
 		val = val.replace(/<ref[^>]*\/>/gi, "");
 
-		// Strip HTML tags but keep content
+		// Convert <br> to separator before stripping all tags
+		val = val.replace(/<br\s*\/?>/gi, ", ");
+		// Strip remaining HTML tags but keep content
 		val = val.replace(/<\/?[a-z][^>]*\/?>/gi, "");
+		// Decode common HTML entities
+		val = val.replace(/&nbsp;/g, " ");
+		val = val.replace(/&amp;/g, "&");
+		val = val.replace(/&lt;/g, "<");
+		val = val.replace(/&gt;/g, ">");
+		val = val.replace(/&quot;/g, '"');
+		val = val.replace(/&#\d+;/g, "");
+		val = val.replace(/&#x[\da-fA-F]+;/g, "");
 
 		// Convert wikilinks: [[target|display]] → display, [[target]] → target
 		val = val.replace(/\[\[([^\]|]*)\|([^\]]*)\]\]/g, "$2");
@@ -492,11 +567,25 @@ function parseInfoboxContent(raw: string): string {
 		val = val.replace(/\[https?:\/\/[^\s\]]*\s+([^\]]+)\]/g, "$1");
 		val = val.replace(/\[https?:\/\/[^\s\]]*\]/g, "");
 
+		// Truncate at raw template syntax that leaked through (e.g. "| casualties1 = ")
+		val = val.replace(/\s*\|\s*\w+\s*=[\s\S]*$/, "");
+		// Strip leftover image/file wikitext syntax
+		val = val.replace(/frameless\|[^|]*(\|[^|]*)*/g, "");
+		// Strip ref tags at end of value: [MSR], [b92], [wiki] etc.
+		// Runs after template truncation so refs are now at the end.
+		// Only strips trailing refs to preserve notation like [Xe] in electron configs.
+		val = val.replace(/(\s*\[[^\[\]]{1,50}\])+\s*$/g, "");
 		// Clean up excess whitespace
-		val = val.replace(/\s+/g, " ").trim();
+		val = collapseWhitespace(val);
+		// Trim leading punctuation (from stripped templates)
+		val = val.replace(/^[,;:\s]+/, "");
 
 		// Skip if value is empty or just punctuation/whitespace after cleaning
 		if (!val || /^[\s.,;:\-–—]*$/.test(val)) continue;
+		// Skip uninformative placeholder values
+		if (/^(none|n\/a|unknown|yes|no|see|\?)$/i.test(val)) continue;
+		// Skip values that are just reference tags or brackets
+		if (/^\[.*\]$/.test(val) && val.length < 30) continue;
 
 		// Skip values that are just filenames or URLs
 		if (/\.(jpg|jpeg|png|svg|gif|webp|pdf)$/i.test(val)) continue;
@@ -543,7 +632,7 @@ function stripNestedBracesSimple(text: string): string {
  */
 function formatInfoboxKey(key: string): string {
 	// Replace underscores with spaces
-	let k = key.replace(/_/g, " ").trim();
+	let k = key.replaceAll("_", " ").trim();
 	// Title case the first letter
 	if (k.length > 0) {
 		k = k.charAt(0).toUpperCase() + k.slice(1);
@@ -691,6 +780,44 @@ function abbreviateRef(body: string): string {
 	return "";
 }
 
+/** Clean LaTeX math content into readable plain text. */
+function cleanMathContent(latex: string): string {
+	let t = latex;
+	// Extract text from \text{...}, \mathrm{...}, \operatorname{...}, etc.
+	t = t.replace(
+		/\\(?:text|textrm|textbf|textit|mathrm|mathbf|mathit|operatorname)\{([^{}]*)\}/g,
+		"$1",
+	);
+	// Common named functions: \log → "log", \sin → "sin", etc.
+	t = t.replace(/\\(log|ln|sin|cos|tan|max|min|lim|sup|inf|det|gcd|lg|exp|Pr)\b/g, "$1");
+	// Modular arithmetic
+	t = t.replace(/\\(?:p?mod|bmod)\b/g, "mod");
+	// Common operators/symbols
+	t = t.replace(/\\cdot\b/g, "*");
+	t = t.replace(/\\times\b/g, "x");
+	t = t.replace(/\\pm\b/g, "+/-");
+	t = t.replace(/\\leq?\b/g, "<=");
+	t = t.replace(/\\geq?\b/g, ">=");
+	t = t.replace(/\\neq?\b/g, "!=");
+	t = t.replace(/\\approx\b/g, "~");
+	t = t.replace(/\\infty\b/g, "infinity");
+	t = t.replace(/\\[lc]dots\b/g, "...");
+	// Block commands: \begin{...}, \end{...}, spacing/sizing commands
+	t = t.replace(/\\(?:begin|end)\{[^}]*\}/g, " ");
+	t = t.replace(/\\(?:frac|dfrac|tfrac|sqrt|overline|underline|hat|bar|vec|tilde)\b/g, " ");
+	t = t.replace(/\\(?:sum|prod|int|iint|iiint|oint|bigcup|bigcap|bigoplus)\b/g, " ");
+	t = t.replace(/\\(?:left|right|big|Big|bigg|Bigg|displaystyle|textstyle)\b/g, "");
+	// Remaining \commands and \symbols
+	t = t.replace(/\\[a-zA-Z]+/g, " ");
+	t = t.replace(/\\./g, "");
+	// All remaining { } (LaTeX grouping — safe to strip now)
+	t = t.replace(/[{}]/g, "");
+	// Cleanup
+	t = t.replace(/\s+/g, " ").trim();
+	if (!/[a-zA-Z0-9]/.test(t)) return "";
+	return t;
+}
+
 export function parseWikitext(raw: string): string {
 	let t = raw;
 	// HTML comments
@@ -709,6 +836,13 @@ export function parseWikitext(raw: string): string {
 	t = t.replace(/\[\[Category:[^\]]*\]\]/gi, "");
 	// Files/images (keep captions)
 	t = stripFiles(t);
+	// Strip <math> tags before template processing — LaTeX uses {{ }}
+	// which would confuse the brace counter in stripNestedBraces.
+	// Extract readable text; strip LaTeX noise.
+	t = t.replace(/<math[^>]*>([\s\S]*?)<\/math>/gi, (_m, body: string) => {
+		const cleaned = cleanMathContent(body);
+		return cleaned ? ` ${cleaned} ` : "";
+	});
 	// Preserve numeric/value templates before stripping all templates
 	t = preserveNumericTemplates(t);
 	// Extract infobox data as plain text before stripping all templates
@@ -719,8 +853,12 @@ export function parseWikitext(raw: string): string {
 	t = t.replace(/<gallery[\s\S]*?<\/gallery>/gi, "");
 	// Magic words
 	t = t.replace(/__[A-Z]+__/g, "");
+	// Convert <br> to newline before stripping remaining HTML
+	t = t.replace(/<br\s*\/?>/gi, "\n");
 	// HTML tags (keep content)
 	t = t.replace(/<\/?[a-z][^>]*\/?>/gi, "");
+	// Decode HTML entities that survive from template expansion
+	t = decodeHtmlEntities(t);
 	// Boilerplate sections
 	t = stripBoilerplateSections(t);
 	// Whitespace cleanup
@@ -761,7 +899,7 @@ function formatSections(leaves: string[]): string {
 
 const SECTION_CAP = 800;
 
-function extractSection(wikitext: string, name: string, query?: string): string {
+function extractSection(wikitext: string, name: string, query?: string, cap = SECTION_CAP): string {
 	const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const re = new RegExp(`^(={2,})\\s*${esc}\\s*\\1\\s*$`, "m");
 	const m = re.exec(wikitext);
@@ -774,41 +912,70 @@ function extractSection(wikitext: string, name: string, query?: string): string 
 
 	// Skip cap if the query contains the exact section name
 	if (query?.toLowerCase().includes(name.toLowerCase())) return full;
-	if (full.length <= SECTION_CAP) return full;
+	if (full.length <= cap) return full;
 
 	// Select complete sentences/paragraphs from the center of the section
 	const headingEnd = full.indexOf("\n");
 	const heading = headingEnd >= 0 ? `${full.slice(0, headingEnd + 1)}` : "";
 	const body = headingEnd >= 0 ? full.slice(headingEnd + 1) : full;
-	const bodyBudget = SECTION_CAP - heading.length;
+	const bodyBudget = cap - heading.length;
 	if (body.length <= bodyBudget) return full;
 
 	const chunks = splitChunks(body);
 	if (chunks.length === 0) return heading;
 
-	// Find the chunk nearest the center of the body by character offset
-	let offset = 0;
-	const offsets: number[] = [];
-	for (const c of chunks) {
-		offsets.push(offset + c.length / 2);
-		offset += c.length;
-	}
-	const bodyMid = body.length / 2;
-	let centerIdx = 0;
-	let bestDist = Infinity;
-	for (let i = 0; i < offsets.length; i++) {
-		const dist = Math.abs((offsets[i] ?? 0) - bodyMid);
-		if (dist < bestDist) {
-			bestDist = dist;
-			centerIdx = i;
+	// Query-aware anchor: prefer chunks containing discriminating query terms
+	// (terms in query but NOT in the section name).
+	let startIdx = -1;
+	if (query) {
+		const sectionWords = new Set(
+			normalizeDashes(name).toLowerCase().split(/[\s\-]+/).filter((w) => w.length > 1),
+		);
+		const terms = normalizeDashes(query)
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((w) => w.length > 1 && !sectionWords.has(w));
+		if (terms.length > 0) {
+			let bestScore = 0;
+			for (let i = 0; i < chunks.length; i++) {
+				const lower = chunks[i]!.toLowerCase();
+				let score = 0;
+				for (const term of terms) {
+					if (lower.includes(term)) score++;
+				}
+				if (score > bestScore) {
+					bestScore = score;
+					startIdx = i;
+				}
+			}
 		}
 	}
 
-	// Expand outward from center, alternating before/after, adding whole chunks
-	const selected = new Set<number>([centerIdx]);
-	let used = chunks[centerIdx]?.length ?? 0;
-	let lo = centerIdx - 1;
-	let hi = centerIdx + 1;
+	// Fall back to center of section when no query match
+	if (startIdx < 0) {
+		let offset = 0;
+		const offsets: number[] = [];
+		for (const c of chunks) {
+			offsets.push(offset + c.length / 2);
+			offset += c.length;
+		}
+		const bodyMid = body.length / 2;
+		startIdx = 0;
+		let bestDist = Infinity;
+		for (let i = 0; i < offsets.length; i++) {
+			const dist = Math.abs((offsets[i] ?? 0) - bodyMid);
+			if (dist < bestDist) {
+				bestDist = dist;
+				startIdx = i;
+			}
+		}
+	}
+
+	// Expand outward from startIdx, alternating before/after, adding whole chunks
+	const selected = new Set<number>([startIdx]);
+	let used = chunks[startIdx]?.length ?? 0;
+	let lo = startIdx - 1;
+	let hi = startIdx + 1;
 	while (used < bodyBudget && (lo >= 0 || hi < chunks.length)) {
 		// Alternate: try before, then after
 		if (lo >= 0) {
@@ -854,35 +1021,63 @@ function detectSections(
 	for (const h of hits) {
 		if (h.title === title && h.sectionTitle) found.add(h.sectionTitle);
 	}
-	// From query words that match section names
-	const titleWords = new Set(title.toLowerCase().split(/\s+/));
-	const extras = query
+	// From query words that match section names.
+	// Normalize dashes so "Miller-Rabin" (hyphen) matches "Miller–Rabin" (en-dash).
+	const titleWords = new Set(normalizeDashes(title).toLowerCase().split(/\s+/));
+	const extras = normalizeDashes(query)
 		.toLowerCase()
 		.split(/\s+/)
 		.filter((w) => !titleWords.has(w) && w.length > 2);
 	if (extras.length > 0) {
 		for (const s of sections) {
-			const lower = s.name.toLowerCase();
+			const lower = normalizeDashes(s.name).toLowerCase();
 			for (const w of extras) {
 				if (lower.includes(w)) found.add(s.name);
 			}
 		}
 	}
-	return [...found];
+
+	// Drop ancestor sections whose byte range strictly contains a selected
+	// descendant. extractSection terminates at the next same-or-lower-level
+	// heading, so a level-2 parent's extract already includes its level-3
+	// children — emitting both parent and child duplicates the children.
+	// Prefer the descendant: its match is the more specific signal.
+	const ranges: { name: string; start: number; end: number }[] = [];
+	const seenForRange = new Set<string>();
+	for (let i = 0; i < sections.length; i++) {
+		const s = sections[i]!;
+		if (!found.has(s.name) || seenForRange.has(s.name)) continue;
+		seenForRange.add(s.name);
+		let end = Number.POSITIVE_INFINITY;
+		for (let j = i + 1; j < sections.length; j++) {
+			if (sections[j]!.level <= s.level) {
+				end = sections[j]!.byteoffset;
+				break;
+			}
+		}
+		ranges.push({ name: s.name, start: s.byteoffset, end });
+	}
+	const dropped = new Set<string>();
+	for (const r of ranges) {
+		for (const other of ranges) {
+			if (other === r) continue;
+			if (other.start > r.start && other.end <= r.end) {
+				dropped.add(r.name);
+				break;
+			}
+		}
+	}
+	return [...found].filter((n) => !dropped.has(n));
 }
 
 // --- XML helpers ---
 
 function x(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
+	return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 function cdata(text: string): string {
-	return `<![CDATA[${text.replace(/\]\]>/g, "]]]]><![CDATA[>")}]]>`;
+	return `<![CDATA[${text.replaceAll("]]>", "]]]]><![CDATA[>")}]]>`;
 }
 
 /**
@@ -958,7 +1153,7 @@ export function createSeenContent(): SeenContent {
 const MIN_DEDUP_LENGTH = 40;
 
 function normalizeChunk(s: string): string {
-	return s.trim().toLowerCase().replace(/\s+/g, " ");
+	return collapseWhitespace(s).toLowerCase();
 }
 
 function isHeader(chunk: string): boolean {
@@ -1004,10 +1199,15 @@ function filterSeen(text: string, article: string, seen: SeenContent): string {
  */
 function hasNovelContent(text: string, article: string, seen: SeenContent): boolean {
 	const set = articleSeen(article, seen);
+	let anyDedupable = false;
 	for (const chunk of splitChunks(text)) {
 		if (!isDedupable(chunk)) continue;
+		anyDedupable = true;
 		if (!set.has(normalizeChunk(chunk))) return true;
 	}
+	// If no chunks are long enough to dedup, treat any non-empty text as novel
+	// so first-time content is never suppressed.
+	if (!anyDedupable) return text.trim().length > 0;
 	return false;
 }
 
@@ -1047,16 +1247,20 @@ function filterAndCheckNovelty(
 	const chunks = splitChunks(text);
 	const novel: string[] = [];
 	let hasNovel = false;
+	let anyDedupable = false;
 	for (const chunk of chunks) {
 		if (!isDedupable(chunk)) {
 			novel.push(chunk);
 			continue;
 		}
+		anyDedupable = true;
 		if (!set.has(normalizeChunk(chunk))) {
 			novel.push(chunk);
 			hasNovel = true;
 		}
 	}
+	// If no chunks are long enough to dedup, treat any content as novel
+	if (!anyDedupable && novel.length > 0) hasNovel = true;
 	return { filtered: novel.join("\n\n"), hasNovel };
 }
 
@@ -1130,13 +1334,25 @@ export async function searchWikipedia(query: string, seen?: SeenContent): Promis
 			}),
 			fullTextSearch(query).catch((e): SearchResponse => {
 				errors.push(`search: ${e instanceof Error ? e.message : String(e)}`);
-				return { hits: [], totalHits: 0, suggestion: undefined };
+				return { hits: [], suggestion: undefined };
 			}),
 		]);
 
 		if (title) return await articleResult(query, title, search, seen);
 		if (errors.length > 0 && search.hits.length === 0) {
 			return `<error query="${x(query)}">${x(errors.join("; "))}</error>`;
+		}
+		// If the top search hit matched a specific section, the search engine
+		// is telling us the query targets one article — promote to single-article
+		// mode so it gets the full budget instead of 1/3 in multi-result mode.
+		const topHit = search.hits[0];
+		if (topHit?.sectionTitle) {
+			const promoted: TitleResult = {
+				title: topHit.title,
+				redirectFrom: undefined,
+				type: "standard",
+			};
+			return await articleResult(query, promoted, search, seen);
 		}
 		return await searchResults(query, search, seen);
 	} catch (err) {
@@ -1161,18 +1377,43 @@ async function articleResult(
 	const intro = firstHeader > 0 ? content.slice(0, firstHeader).trim() : "";
 
 	const relevant = detectSections(query, title.title, page.sections, search.hits);
+
+	// Targeted query: extras words matched specific sections → focus on those.
+	// Whole-article query: all query words match the title → spread budget across
+	// all sections so later ones (Pseudocode, Algorithm, etc.) aren't lost.
+	const titleWords = new Set(normalizeDashes(title.title).toLowerCase().split(/\s+/));
+	const wholeArticle = normalizeDashes(query)
+		.toLowerCase()
+		.split(/\s+/)
+		.filter((w) => w.length > 2)
+		.every((w) => titleWords.has(w));
+
 	let body = "";
-	if (relevant.length > 0) {
+	if (!wholeArticle && relevant.length > 0) {
+		// Targeted: extract detected sections at full cap
 		const sections = relevant
 			.map((n) => extractSection(content, n, query))
 			.filter(Boolean)
 			.join("\n\n");
 
-		// Budget: matched sections get priority, intro fills remaining space.
-		// Within intro, infobox lines (Key: Value) are prioritized over prose.
-		const sectionBudget = Math.min(sections.length, CHAR_LIMIT * 0.7);
-		const introBudget = CHAR_LIMIT * 0.6 - sectionBudget;
+		const sectionBudget = Math.min(sections.length, Math.floor(CHAR_LIMIT * 0.7));
+		const introBudget = Math.floor(CHAR_LIMIT * 0.6) - sectionBudget;
 		const trimmedIntro = introBudget > 100 ? trimIntro(intro, introBudget) : "";
+		body = trimmedIntro ? `${trimmedIntro}\n\n${sections}` : sections;
+	}
+	if (!body && leaves.length > 0) {
+		// Whole-article or no sections detected: generous intro (Wikipedia's
+		// lead contains the most important summary facts), then ALL sections
+		// at adaptive per-section cap so later ones aren't lost.
+		const introBudget = Math.min(intro.length, Math.floor(CHAR_LIMIT * 0.4));
+		const trimmedIntro = introBudget > 100 ? trimIntro(intro, introBudget) : "";
+		const sectionBudget = Math.floor(CHAR_LIMIT * 0.7) - (trimmedIntro?.length ?? 0);
+		const perCap = Math.max(200, Math.floor(sectionBudget / leaves.length));
+
+		const sections = leaves
+			.map((n) => extractSection(content, n, undefined, perCap))
+			.filter(Boolean)
+			.join("\n\n");
 		body = trimmedIntro ? `${trimmedIntro}\n\n${sections}` : sections;
 	}
 	if (!body) body = content;
@@ -1211,7 +1452,7 @@ async function articleResult(
 
 	if (isStub && search.hits.length > 1) {
 		const remain = CHAR_LIMIT - xml.length - 20;
-		if (remain > 100) xml += searchSnippets(search, remain, title.title);
+		if (remain > 100) xml += searchSnippets(search, remain, new Set([title.title]));
 	}
 
 	xml += "</result>";
@@ -1242,9 +1483,9 @@ async function searchResults(
 		if (!seen) return true;
 		return hasNovelContent(p, top[idx]!.title, seen);
 	});
-	const novelCount = novelFlags.filter(Boolean).length;
 
-	let xml = `<result query="${x(query)}" total="${search.totalHits}"`;
+
+	let xml = `<result query="${x(query)}"`;
 	if (search.suggestion) xml += ` suggestion="${x(search.suggestion)}"`;
 	xml += ">\n";
 	let remaining = CHAR_LIMIT - xml.length - 20;
@@ -1271,9 +1512,11 @@ async function searchResults(
 		const closeTag = "</page>\n";
 		const overhead = tag.length + secList.length + closeTag.length + 25;
 
-		// Cap per-result budget so one result can't starve the rest
-		const novelLeft = novelCount - novelRendered;
-		const perResultBudget = Math.floor(remaining / Math.max(novelLeft, 1));
+		// Weight budget by rank: top result gets the lion's share,
+		// respecting the search engine's relevance ordering.
+		const RANK_WEIGHTS = [0.6, 0.25, 0.15];
+		const weight = RANK_WEIGHTS[novelRendered] ?? 0.15;
+		const perResultBudget = Math.floor(remaining * weight);
 		const contentBudget = perResultBudget - overhead;
 
 		if (contentBudget < 80) continue;
@@ -1320,14 +1563,22 @@ async function searchResults(
 		remaining = CHAR_LIMIT - xml.length - 20;
 	}
 
+	// Append title+snippet one-liners for remaining hits so the agent
+	// knows what else exists and can make informed follow-up queries.
+	remaining = CHAR_LIMIT - xml.length - 20;
+	if (remaining > 100 && search.hits.length > top.length) {
+		const renderedTitles = new Set(top.map((h) => h.title));
+		xml += searchSnippets(search, remaining, renderedTitles);
+	}
+
 	xml += "</result>";
 	return xml;
 }
 
-function searchSnippets(search: SearchResponse, budget: number, exclude?: string): string {
-	let xml = `<also_found total="${search.totalHits}">\n`;
+function searchSnippets(search: SearchResponse, budget: number, exclude?: Set<string>): string {
+	let xml = "<also_found>\n";
 	for (const h of search.hits) {
-		if (h.title === exclude) continue;
+		if (exclude?.has(h.title)) continue;
 		const entry = `<hit title="${x(h.title)}" section="${x(h.sectionTitle)}">${x(h.snippet)}</hit>\n`;
 		if (xml.length + entry.length + 15 > budget) break;
 		xml += entry;

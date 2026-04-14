@@ -4,6 +4,12 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-03-10",
 	"compatibility_flags": ["nodejs_compat"],
+	"build": {
+		"command": "bun run build:chat"
+	},
+	"rules": [
+		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": false }
+	],
 	"migrations": [
 		{
 			"new_sqlite_classes": ["WikiSearchMCP"],

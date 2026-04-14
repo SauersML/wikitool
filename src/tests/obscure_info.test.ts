@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { extractNumbers, judge, judgeNumeric, type ObscureQuestion } from "../evals/obscure_info";
-import { matchesAny } from "../evals/utils";
+import { judge, judgeNumeric, type ObscureQuestion } from "../evals/obscure_info";
+import { extractNumbers, matchesAny } from "../evals/utils";
 
 describe("obscure_info eval", () => {
 	describe("numeric judge", () => {
@@ -54,10 +54,19 @@ describe("obscure_info eval", () => {
 			expect(matchesAny("I don't know the answer.", ["Gudjon Samuelsson"])).toBe(false);
 		});
 
-		test("matches substring within longer response", () => {
+		test("matches short answer as a whole word in sentence", () => {
 			expect(
 				matchesAny("The IATA airport code for Kansai International Airport is KIX.", ["KIX"]),
 			).toBe(true);
+		});
+
+		test("does not match surname embedded in a longer word", () => {
+			expect(matchesAny("The Colemans arrived early.", ["Coleman"])).toBe(false);
+		});
+
+		test("matches surname as standalone word", () => {
+			expect(matchesAny("It was named after Coleman.", ["Coleman"])).toBe(true);
+			expect(matchesAny("Johnny Coleman was the driver.", ["Johnny Coleman", "Coleman"])).toBe(true);
 		});
 	});
 

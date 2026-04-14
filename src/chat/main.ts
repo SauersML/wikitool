@@ -208,8 +208,13 @@ function renderMarkdown(md: string): DocumentFragment {
 
 	const isBlockStart = (line: string) => /^(#{1,6}\s|[-*+]\s|\d+\.\s|```|>\s?)/.test(line);
 
+	// Helper: bounded read. Only returns undefined when idx is out of range,
+	// which the callers already guard with `i < lines.length`.
+	const lineAt = (idx: number): string | undefined => lines[idx];
+
 	while (i < lines.length) {
-		const line = lines[i];
+		const line = lineAt(i);
+		if (line === undefined) break;
 
 		if (line.trim() === "") {
 			i++;
@@ -220,8 +225,10 @@ function renderMarkdown(md: string): DocumentFragment {
 		if (/^```/.test(line)) {
 			const buf: string[] = [];
 			i++;
-			while (i < lines.length && !/^```\s*$/.test(lines[i])) {
-				buf.push(lines[i]);
+			while (i < lines.length) {
+				const next = lineAt(i);
+				if (next === undefined || /^```\s*$/.test(next)) break;
+				buf.push(next);
 				i++;
 			}
 			if (i < lines.length) i++;
@@ -236,7 +243,7 @@ function renderMarkdown(md: string): DocumentFragment {
 		// Heading — # and ## both render as h3 (biggest in-message heading),
 		// then ### → h4, #### → h5, etc.
 		const h = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
-		if (h) {
+		if (h && h[1] !== undefined && h[2] !== undefined) {
 			const hashes = h[1].length;
 			const level = hashes <= 2 ? 3 : Math.min(hashes + 1, 6);
 			const el = document.createElement(`h${level}` as "h3" | "h4" | "h5" | "h6");
@@ -250,12 +257,14 @@ function renderMarkdown(md: string): DocumentFragment {
 		if (/^[-*+]\s+/.test(line)) {
 			const ul = document.createElement("ul");
 			while (i < lines.length) {
-				if (/^[-*+]\s+/.test(lines[i])) {
+				const cur = lineAt(i);
+				if (cur === undefined) break;
+				if (/^[-*+]\s+/.test(cur)) {
 					const li = document.createElement("li");
-					renderInline(lines[i].replace(/^[-*+]\s+/, ""), li);
+					renderInline(cur.replace(/^[-*+]\s+/, ""), li);
 					ul.appendChild(li);
 					i++;
-				} else if (lines[i].trim() === "" && /^[-*+]\s+/.test(lines[i + 1] ?? "")) {
+				} else if (cur.trim() === "" && /^[-*+]\s+/.test(lineAt(i + 1) ?? "")) {
 					i++;
 				} else {
 					break;
@@ -270,12 +279,14 @@ function renderMarkdown(md: string): DocumentFragment {
 		if (/^\d+\.\s+/.test(line)) {
 			const ol = document.createElement("ol");
 			while (i < lines.length) {
-				if (/^\d+\.\s+/.test(lines[i])) {
+				const cur = lineAt(i);
+				if (cur === undefined) break;
+				if (/^\d+\.\s+/.test(cur)) {
 					const li = document.createElement("li");
-					renderInline(lines[i].replace(/^\d+\.\s+/, ""), li);
+					renderInline(cur.replace(/^\d+\.\s+/, ""), li);
 					ol.appendChild(li);
 					i++;
-				} else if (lines[i].trim() === "" && /^\d+\.\s+/.test(lines[i + 1] ?? "")) {
+				} else if (cur.trim() === "" && /^\d+\.\s+/.test(lineAt(i + 1) ?? "")) {
 					i++;
 				} else {
 					break;
@@ -289,8 +300,10 @@ function renderMarkdown(md: string): DocumentFragment {
 		if (/^>\s?/.test(line)) {
 			const bq = document.createElement("blockquote");
 			const parts: string[] = [];
-			while (i < lines.length && /^>\s?/.test(lines[i])) {
-				parts.push(lines[i].replace(/^>\s?/, ""));
+			while (i < lines.length) {
+				const cur = lineAt(i);
+				if (cur === undefined || !/^>\s?/.test(cur)) break;
+				parts.push(cur.replace(/^>\s?/, ""));
 				i++;
 			}
 			renderInline(parts.join(" "), bq);
@@ -301,8 +314,10 @@ function renderMarkdown(md: string): DocumentFragment {
 		// Paragraph: collect until blank line or block-starting line
 		const para: string[] = [line];
 		i++;
-		while (i < lines.length && lines[i].trim() !== "" && !isBlockStart(lines[i])) {
-			para.push(lines[i]);
+		while (i < lines.length) {
+			const cur = lineAt(i);
+			if (cur === undefined || cur.trim() === "" || isBlockStart(cur)) break;
+			para.push(cur);
 			i++;
 		}
 		const p = document.createElement("p");
@@ -460,12 +475,11 @@ function classifyError(err: unknown): { kind: ErrorKind; message: string; status
 		return { kind: "network", message: "Network error reaching Anthropic" };
 	}
 	if (err instanceof Anthropic.APIError) {
+		const status = (err as { status?: number }).status;
 		return {
 			kind: "unknown",
-			status: (err as { status?: number }).status,
-			message:
-				extractMessage(err) ||
-				`API error${(err as { status?: number }).status ? ` (${(err as { status?: number }).status})` : ""}`,
+			message: extractMessage(err) || `API error${status !== undefined ? ` (${status})` : ""}`,
+			...(status !== undefined ? { status } : {}),
 		};
 	}
 	if (err instanceof Error) {
@@ -544,8 +558,9 @@ function setStreamingUI(streaming: boolean) {
 /** Extract `query` from a partially-streamed JSON string for live preview. */
 function extractPartialQuery(json: string): string | null {
 	const match = json.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
-	if (!match) return null;
-	return match[1]
+	const captured = match?.[1];
+	if (captured === undefined) return null;
+	return captured
 		.replace(/\\n/g, "\n")
 		.replace(/\\t/g, "\t")
 		.replace(/\\r/g, "\r")
@@ -666,9 +681,12 @@ async function runAgentLoop() {
 
 			if (toolUses.length > 1) {
 				setStatus(`searching ${toolUses.length} queries in parallel`, "");
-			} else if (toolUses.length === 1) {
-				const q = (((toolUses[0].input ?? {}) as { query?: string }).query || "").trim();
-				setStatus(`searching "${truncate(q, 40)}"`, "");
+			} else {
+				const sole = toolUses[0];
+				if (sole !== undefined) {
+					const q = (((sole.input ?? {}) as { query?: string }).query || "").trim();
+					setStatus(`searching "${truncate(q, 40)}"`, "");
+				}
 			}
 
 			const results: ToolResultBlockParam[] = await Promise.all(

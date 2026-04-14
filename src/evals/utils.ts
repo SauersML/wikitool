@@ -58,6 +58,8 @@ export interface ToolCallRecord {
 	name: string;
 	input: Record<string, unknown>;
 	result: string;
+	toolUseId: string;
+	isError?: boolean;
 }
 
 export interface AgentResult {
@@ -140,10 +142,40 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 							name: block.name,
 							input: (block.input ?? {}) as Record<string, unknown>,
 							result: "",
+							toolUseId: (block as { id?: string }).id ?? "",
 						});
 					}
 					if (block.type === "text" && typeof block.text === "string") {
 						assistantTexts.push(block.text);
+					}
+				}
+			}
+		}
+		// Synthetic user messages from the SDK carry tool_result blocks back.
+		// Match each block's tool_use_id to a prior toolCalls entry so the log
+		// records the full query AND the Wikipedia text returned.
+		if (msg.type === "user" && "message" in msg) {
+			const content = (msg as SDKUserMessageLike).message?.content;
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type === "tool_result") {
+						const id = (block as { tool_use_id?: string }).tool_use_id ?? "";
+						const call = toolCalls.find((c) => c.toolUseId === id && c.result === "");
+						if (call) {
+							const c = (block as { content?: unknown }).content;
+							if (typeof c === "string") {
+								call.result = c;
+							} else if (Array.isArray(c)) {
+								call.result = c
+									.map((part: { type?: string; text?: string }) =>
+										part.type === "text" && typeof part.text === "string" ? part.text : "",
+									)
+									.join("");
+							} else {
+								call.result = JSON.stringify(c);
+							}
+							if ((block as { is_error?: boolean }).is_error) call.isError = true;
+						}
 					}
 				}
 			}
@@ -176,7 +208,18 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 interface SDKAssistantMessageLike {
 	type: "assistant";
 	message?: {
-		content: Array<{ type: string; name?: string; input?: unknown; text?: string }>;
+		content: Array<{ type: string; name?: string; input?: unknown; text?: string; id?: string }>;
+	};
+}
+interface SDKUserMessageLike {
+	type: "user";
+	message?: {
+		content: Array<{
+			type: string;
+			tool_use_id?: string;
+			content?: unknown;
+			is_error?: boolean;
+		}>;
 	};
 }
 interface SDKResultLike {

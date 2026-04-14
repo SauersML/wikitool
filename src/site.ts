@@ -224,7 +224,7 @@ const HTML = `<!DOCTYPE html>
   .msg.assistant .body h3 { font-size: 14px; font-weight: 500; color: var(--accent); margin: 16px 0 6px; }
   .msg.assistant .body h4 { font-size: 13px; font-weight: 500; color: var(--accent); margin: 14px 0 4px; }
   .msg.assistant .body h5, .msg.assistant .body h6 { font-size: 12px; font-weight: 500; color: var(--accent); margin: 12px 0 4px; }
-  .msg.assistant .body ul, .msg.assistant .body ol { padding-left: 22px; margin: 0 0 10px; }
+  .msg.assistant .body ul, .msg.assistant .body ol { padding-left: 22px; margin: 0 0 10px; list-style-type: disc; }
   .msg.assistant .body li { margin: 2px 0; }
   .msg.assistant .body li > p { margin: 0 0 4px; }
   .msg.assistant .body strong { color: var(--fg); font-weight: 700; }

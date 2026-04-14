@@ -3,9 +3,6 @@ import { parseWikitext, truncate } from "../tool/search";
 
 describe("abbreviateRef via parseWikitext — title branch", () => {
 	test("short title (≤3 words): emits full head without ellipsis", () => {
-		const wt = `Some claim.<ref>{{cite book|title=Brief History|author=Jones}}</ref>`;
-		// author=Jones provides the last-name short form, so the title branch
-		// isn't reached here — but a title-only ref should still round-trip.
 		const out = parseWikitext(`Other.<ref>{{cite book|title=Brief History}}</ref>`);
 		expect(out).toContain("[Brief History]");
 		expect(out).not.toContain("…");
@@ -59,7 +56,9 @@ describe("abbreviateRef via parseWikitext — plain-text branch", () => {
 	});
 
 	test("long plain ref: ellipsis appended", () => {
-		const out = parseWikitext(`X.<ref>Smith, John. The Very Long History of Everything. 2019.</ref>`);
+		const out = parseWikitext(
+			`X.<ref>Smith, John. The Very Long History of Everything. 2019.</ref>`,
+		);
 		// First 3 words of the cleaned plain body
 		expect(out).toMatch(/\[\S+ \S+ \S+…\]/);
 	});

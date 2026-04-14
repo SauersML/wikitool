@@ -3,6 +3,83 @@ const WIKI_REST = "https://en.wikipedia.org/api/rest_v1";
 const CHAR_LIMIT = 4000;
 const UA = "WikiSearchMCP/1.0 (https://wikisearch.sauerslabs.workers.dev; sauerslabs@gmail.com)";
 
+// Wikimedia's UA policy blocks generic/default UAs with HTTP 429 — so in
+// server/CLI contexts (Node, Bun, Workers) we include a descriptive
+// User-Agent. Browsers forbid setting User-Agent in fetch() and inject their
+// own (which Wikimedia accepts), so we skip it there to avoid the warning.
+const IS_BROWSER =
+	typeof (globalThis as { window?: unknown }).window !== "undefined" &&
+	typeof (globalThis as { document?: unknown }).document !== "undefined";
+const WIKI_HEADERS: Record<string, string> = IS_BROWSER
+	? { "Api-User-Agent": UA }
+	: { "User-Agent": UA, "Api-User-Agent": UA };
+
+// --- Retry-aware fetch for Wikipedia endpoints ---
+
+const WIKI_MAX_ATTEMPTS = 3;
+const WIKI_RETRY_AFTER_CAP_MS = 10_000;
+const WIKI_BACKOFF_BASE_MS = [500, 1000, 2000];
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Strip query string and keep a readable label for logging. */
+function shortenWikiUrl(url: string): string {
+	const qIdx = url.indexOf("?");
+	const base = qIdx === -1 ? url : url.slice(0, qIdx);
+	if (qIdx !== -1) {
+		const params = new URLSearchParams(url.slice(qIdx + 1));
+		const action = params.get("action");
+		if (action) return `${base}?action=${action}`;
+	}
+	return base;
+}
+
+/** Parse a Retry-After header that specifies an integer number of seconds. */
+function parseRetryAfterMs(header: string | null): number | null {
+	if (!header) return null;
+	const trimmed = header.trim();
+	if (!trimmed) return null;
+	const seconds = Number.parseInt(trimmed, 10);
+	if (!Number.isFinite(seconds) || seconds < 0) return null;
+	return seconds * 1000;
+}
+
+/**
+ * Fetch a Wikipedia URL with graceful retry on HTTP 429.
+ * - Up to 3 total attempts.
+ * - Honors Retry-After (seconds), capped at 10s.
+ * - Falls back to jittered exponential backoff (500/1000/2000ms ±20%).
+ * - Does NOT retry non-429 responses or network exceptions.
+ */
+async function wikiFetch(url: string, init?: RequestInit): Promise<Response> {
+	let lastResponse: Response | null = null;
+	for (let attempt = 1; attempt <= WIKI_MAX_ATTEMPTS; attempt++) {
+		const res = await fetch(url, init);
+		if (res.status !== 429) return res;
+		lastResponse = res;
+		if (attempt === WIKI_MAX_ATTEMPTS) break;
+
+		const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+		let waitMs: number;
+		if (retryAfterMs !== null) {
+			waitMs = Math.min(retryAfterMs, WIKI_RETRY_AFTER_CAP_MS);
+		} else {
+			const base = WIKI_BACKOFF_BASE_MS[attempt - 1] ?? 2000;
+			const jitter = 1 + (Math.random() * 0.4 - 0.2);
+			waitMs = Math.round(base * jitter);
+		}
+		console.warn(
+			`[wiki] 429 on ${shortenWikiUrl(url)}, retrying in ${waitMs}ms (attempt ${attempt}/${WIKI_MAX_ATTEMPTS})`,
+		);
+		await sleep(waitMs);
+	}
+	// Exhausted attempts — return the final 429 response so the caller's
+	// existing `if (!res.ok) throw ...` path fires with the same error shape.
+	return lastResponse as Response;
+}
+
 // --- HTML entity + whitespace helpers ---
 
 const HTML_ENTITIES: Record<string, string> = {
@@ -82,8 +159,8 @@ interface PageData {
 
 async function lookupTitle(query: string): Promise<TitleResult | null> {
 	const encoded = encodeURIComponent(query.replaceAll(" ", "_"));
-	const res = await fetch(`${WIKI_REST}/page/summary/${encoded}`, {
-		headers: { "Api-User-Agent": UA },
+	const res = await wikiFetch(`${WIKI_REST}/page/summary/${encoded}`, {
+		headers: WIKI_HEADERS,
 	});
 	if (res.status === 404) return null;
 	if (!res.ok) throw new Error(`Title lookup failed: ${res.status}`);
@@ -111,8 +188,8 @@ async function fullTextSearch(query: string, limit = 10): Promise<SearchResponse
 		formatversion: "2",
 		origin: "*",
 	});
-	const res = await fetch(`${WIKI_API}?${params}`, {
-		headers: { "Api-User-Agent": UA },
+	const res = await wikiFetch(`${WIKI_API}?${params}`, {
+		headers: WIKI_HEADERS,
 	});
 	if (!res.ok) throw new Error(`Search failed: ${res.status}`);
 
@@ -140,8 +217,8 @@ async function getPageContent(title: string): Promise<PageData> {
 		formatversion: "2",
 		origin: "*",
 	});
-	const res = await fetch(`${WIKI_API}?${params}`, {
-		headers: { "Api-User-Agent": UA },
+	const res = await wikiFetch(`${WIKI_API}?${params}`, {
+		headers: WIKI_HEADERS,
 	});
 	if (!res.ok) throw new Error(`Page fetch failed: ${res.status}`);
 
@@ -295,8 +372,8 @@ async function resolveTranscludedInfobox(pageTitle: string, wikitext: string): P
 			formatversion: "2",
 			origin: "*",
 		});
-		const res = await fetch(`${WIKI_API}?${params}`, {
-			headers: { "Api-User-Agent": UA },
+		const res = await wikiFetch(`${WIKI_API}?${params}`, {
+			headers: WIKI_HEADERS,
 		});
 		if (!res.ok) return wikitext;
 		// biome-ignore lint/suspicious/noExplicitAny: Wikipedia API response

@@ -8,7 +8,15 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from "../tool/prompt";
 import { createSeenContent, searchWikipedia } from "../tool/search";
-import { DEFAULT_MODEL, initLog, runAgent, WIKI_TOOL_NAME, writeTsvResults } from "./utils";
+import {
+	DEFAULT_MODEL,
+	initEvalSession,
+	parseResumeArg,
+	runAgent,
+	runKey,
+	runOrLogError,
+	WIKI_TOOL_NAME,
+} from "./utils";
 
 // No eval-specific task framing — this suite studies natural behavior.
 const SYSTEM_PROMPT = SHARED_SYSTEM_PROMPT;
@@ -99,7 +107,12 @@ function createLoggingWikiServer(sink: CallRecord[]) {
 	return createSdkMcpServer({ name: "wiki", tools: [wikiTool] });
 }
 
-async function runOne(task: Task, log: (entry: unknown) => Promise<void>) {
+async function runOne(
+	task: Task,
+	taskIndex: number,
+	log: (entry: unknown) => Promise<void>,
+	appendRow: (row: string[]) => Promise<void>,
+): Promise<string[]> {
 	const calls: CallRecord[] = [];
 	const mcp = createLoggingWikiServer(calls);
 
@@ -125,12 +138,29 @@ async function runOne(task: Task, log: (entry: unknown) => Promise<void>) {
 	}
 	console.log(`  ANSWER: ${result.answer.slice(0, 200).replaceAll("\n", " ")}...`);
 
+	const row: string[] = [
+		task.id,
+		task.label,
+		String(calls.length),
+		calls.map((c) => c.query).join(" | "),
+		String(result.turns),
+		String(result.inputTokens),
+		String(result.outputTokens),
+		result.costUsd.toFixed(5),
+		String(wallMs),
+		result.answer.slice(0, 200),
+	];
+
 	await log({
+		event: "run",
+		timestamp: new Date().toISOString(),
+		index: taskIndex,
 		task,
 		calls,
 		result: {
 			answer: result.answer,
 			turns: result.turns,
+			assistantTexts: result.assistantTexts,
 			inputTokens: result.inputTokens,
 			outputTokens: result.outputTokens,
 			costUsd: result.costUsd,
@@ -139,70 +169,85 @@ async function runOne(task: Task, log: (entry: unknown) => Promise<void>) {
 			toolCallsFromRunAgent: result.toolCalls,
 		},
 		wallMs,
+		tsv_row: row.map(String),
 	});
-
-	return { task, result, calls, wallMs };
+	await appendRow(row);
+	return row;
 }
 
 async function main() {
-	const { log, path } = await initLog("behavioral_suite");
-	console.log(`Log: ${path}`);
+	const headers = [
+		"id",
+		"label",
+		"tool_calls",
+		"queries",
+		"turns",
+		"input_tokens",
+		"output_tokens",
+		"cost_usd",
+		"wall_ms",
+		"answer_preview",
+	];
+
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "behavioral_suite",
+		headers,
+		resume,
+	});
+	console.log(`Log: ${logPath}`);
 	console.log(`Model: ${DEFAULT_MODEL}`);
 
 	const arg = process.argv[2];
 	const tasksToRun =
-		arg !== undefined ? [TASKS[Number.parseInt(arg, 10)]].filter((t): t is Task => !!t) : TASKS;
+		arg !== undefined && !arg.startsWith("--")
+			? [TASKS[Number.parseInt(arg, 10)]].filter((t): t is Task => !!t)
+			: TASKS;
 	console.log(`Tasks: ${tasksToRun.length} / ${TASKS.length}\n`);
 
-	const rows: string[][] = [];
-	let totalCost = 0;
-	let totalIn = 0;
-	let totalOut = 0;
+	await log({
+		event: "start",
+		eval: "behavioral_suite",
+		model: DEFAULT_MODEL,
+		n_tasks: tasksToRun.length,
+		resumed_from: resume ?? null,
+	});
+
+	const rows: string[][] = [...resumedRows];
 
 	for (const task of tasksToRun) {
-		const { result, calls, wallMs } = await runOne(task, log);
-		totalCost += result.costUsd;
-		totalIn += result.inputTokens;
-		totalOut += result.outputTokens;
-
-		rows.push([
-			task.id,
-			task.label,
-			String(calls.length),
-			calls.map((c) => c.query).join(" | "),
-			String(result.turns),
-			String(result.inputTokens),
-			String(result.outputTokens),
-			result.costUsd.toFixed(5),
-			String(wallMs),
-			result.answer.slice(0, 200),
-		]);
+		const taskIndex = TASKS.findIndex((t) => t.id === task.id);
+		if (completed.has(runKey(taskIndex))) {
+			console.log(`\n--- [${task.id}] (already done — skipping)`);
+			continue;
+		}
+		const row = await runOrLogError(log, { index: taskIndex, logPath }, () =>
+			runOne(task, taskIndex, log, appendRow),
+		);
+		rows.push(row);
 	}
 
-	await writeTsvResults(
-		"behavioral_suite",
-		[
-			"id",
-			"label",
-			"tool_calls",
-			"queries",
-			"turns",
-			"input_tokens",
-			"output_tokens",
-			"cost_usd",
-			"wall_ms",
-			"answer_preview",
-		],
-		rows,
-	);
+	const totalIn = rows.reduce((s, r) => s + Number(r[5]), 0);
+	const totalOut = rows.reduce((s, r) => s + Number(r[6]), 0);
+	const totalCost = rows.reduce((s, r) => s + Number(r[7]), 0);
 
 	console.log("\n=".repeat(50));
 	console.log("SUMMARY");
 	console.log("=".repeat(50));
-	console.log(`  Tasks:  ${tasksToRun.length}`);
+	console.log(`  Tasks:  ${rows.length}`);
 	console.log(`  Tokens: ${totalIn} in, ${totalOut} out`);
 	console.log(`  Cost:   $${totalCost.toFixed(4)}`);
-	console.log(`  Log:    ${path}`);
+	console.log(`  Log:    ${logPath}`);
+	console.log(`  TSV:    ${tsvPath}`);
+
+	await log({
+		event: "summary",
+		eval: "behavioral_suite",
+		n_tasks: rows.length,
+		total_input_tokens: totalIn,
+		total_output_tokens: totalOut,
+		total_cost_usd: totalCost,
+	});
 }
 
 const isMainModule = import.meta.path === Bun.main;

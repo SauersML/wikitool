@@ -257,14 +257,130 @@ export function timestamp(): string {
 
 export async function initLog(
 	evalName: string,
-): Promise<{ log: (entry: unknown) => Promise<void>; path: string }> {
+	opts?: { resume?: string },
+): Promise<{
+	log: (entry: unknown) => Promise<void>;
+	path: string;
+	completed: Map<string, Record<string, unknown>>;
+}> {
 	const dir = `${import.meta.dir}/../../logs`;
 	await mkdir(dir, { recursive: true });
-	const path = `${dir}/${evalName}_${timestamp()}.log`;
+	const path = opts?.resume ?? `${dir}/${evalName}_${timestamp()}.log`;
+	const completed = opts?.resume ? await loadCompletedRuns(path) : new Map();
 	const log = async (entry: unknown) => {
 		await appendFile(path, `${JSON.stringify(entry)}\n`, "utf-8");
 	};
-	return { log, path };
+	return { log, path, completed };
+}
+
+/**
+ * Parse `--resume <path>` from argv (or RESUME_LOG env var).
+ * Returns the log file path to resume from, or undefined for a fresh run.
+ */
+export function parseResumeArg(argv: string[] = process.argv): string | undefined {
+	const i = argv.indexOf("--resume");
+	if (i !== -1 && argv[i + 1]) return argv[i + 1];
+	const env = process.env["RESUME_LOG"];
+	return env && env.length > 0 ? env : undefined;
+}
+
+/** Build a stable key for a (index, mode) pair used to dedup on resume. */
+export function runKey(index: number | string, mode?: string | null): string {
+	return mode != null ? `${index}|${mode}` : String(index);
+}
+
+/**
+ * Read a JSONL log file, return a map of completed run entries keyed by
+ * `index|mode` (or just `index` when mode is absent). Only entries with
+ * `event === "run"` are considered completed; partials/errors are ignored.
+ */
+export async function loadCompletedRuns(
+	path: string,
+): Promise<Map<string, Record<string, unknown>>> {
+	const map = new Map<string, Record<string, unknown>>();
+	const file = Bun.file(path);
+	if (!(await file.exists())) return map;
+	const content = await file.text();
+	for (const line of content.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as Record<string, unknown>;
+			if (entry["event"] !== "run") continue;
+			const idx = entry["index"];
+			if (idx === undefined) continue;
+			const mode = entry["mode"];
+			const key = runKey(idx as number | string, mode as string | undefined);
+			map.set(key, entry);
+		} catch {
+			// Skip malformed lines (e.g. partial last write)
+		}
+	}
+	return map;
+}
+
+/**
+ * Initialise a crash-resistant eval session. Pairs an append-only JSONL log
+ * with a TSV file. Streaming append on each row means a crash mid-run loses
+ * at most one row. On resume, prior `event:"run"` entries are read, the TSV
+ * is re-materialised from their embedded `tsv_row` field, and `completed`
+ * tells the eval which (index,mode) pairs to skip.
+ */
+export async function initEvalSession(opts: {
+	evalName: string;
+	headers: string[];
+	resume?: string;
+}): Promise<{
+	log: (entry: unknown) => Promise<void>;
+	appendRow: (row: string[]) => Promise<void>;
+	logPath: string;
+	tsvPath: string;
+	completed: Map<string, Record<string, unknown>>;
+	resumedRows: string[][];
+}> {
+	const logDir = `${import.meta.dir}/../../logs`;
+	const tsvDir = `${import.meta.dir}/results`;
+	await mkdir(logDir, { recursive: true });
+	await mkdir(tsvDir, { recursive: true });
+
+	const logPath = opts.resume ?? `${logDir}/${opts.evalName}_${timestamp()}.log`;
+	const completed = opts.resume ? await loadCompletedRuns(logPath) : new Map();
+
+	// Pair the TSV with the log via shared base name (re-derivable on resume).
+	const base = logPath.split("/").pop()!.replace(/\.log$/, "");
+	const tsvPath = `${tsvDir}/${base}.tsv`;
+
+	// Reconstruct the TSV from completed log entries; the on-disk TSV may have
+	// been truncated or never finished writing — the log is the source of truth.
+	const resumedRows: string[][] = [];
+	let initial = `${opts.headers.join("\t")}\n`;
+	if (opts.resume) {
+		for (const entry of completed.values()) {
+			const row = entry["tsv_row"];
+			if (Array.isArray(row)) {
+				const strRow = row.map((v) => String(v));
+				initial += `${strRow.map(sanitizeTsvField).join("\t")}\n`;
+				resumedRows.push(strRow);
+			}
+		}
+	}
+	await Bun.write(tsvPath, initial);
+
+	const log = async (entry: unknown) => {
+		await appendFile(logPath, `${JSON.stringify(entry)}\n`, "utf-8");
+	};
+
+	const appendRow = async (row: string[]) => {
+		const sanitized = row.map(sanitizeTsvField);
+		await appendFile(tsvPath, `${sanitized.join("\t")}\n`, "utf-8");
+	};
+
+	if (opts.resume) {
+		console.log(
+			`Resuming from ${logPath} (${completed.size} runs already complete; ${resumedRows.length} rows restored)`,
+		);
+	}
+
+	return { log, appendRow, logPath, tsvPath, completed, resumedRows };
 }
 
 /**
@@ -281,6 +397,8 @@ export function buildRunLogEntry(opts: {
 	agentResult: AgentResult;
 	verdict?: Record<string, unknown>;
 	extra?: Record<string, unknown>;
+	/** TSV row to embed so the file can be reconstructed on resume. */
+	tsvRow?: (string | number | boolean)[];
 }): Record<string, unknown> {
 	return {
 		event: "run",
@@ -308,8 +426,41 @@ export function buildRunLogEntry(opts: {
 		cost_usd: opts.agentResult.costUsd,
 		session_id: opts.agentResult.sessionId,
 		...(opts.verdict ? { verdict: opts.verdict } : {}),
+		...(opts.tsvRow ? { tsv_row: opts.tsvRow.map((v) => String(v)) } : {}),
 		...(opts.extra ?? {}),
 	};
+}
+
+/**
+ * Wrap the per-iteration body with crash-handling boilerplate.
+ * On error: logs an `event:"error"` entry (preserved by the JSONL append),
+ * prints a hint about resuming, then rethrows so the eval halts (don't
+ * keep burning attempts when out of credits).
+ */
+export async function runOrLogError<T>(
+	log: (entry: unknown) => Promise<void>,
+	context: { index: number | string; mode?: string; logPath: string },
+	body: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await body();
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		const stack = err instanceof Error ? err.stack : undefined;
+		await log({
+			event: "error",
+			timestamp: new Date().toISOString(),
+			index: context.index,
+			...(context.mode !== undefined ? { mode: context.mode } : {}),
+			error: message,
+			...(stack ? { stack } : {}),
+		});
+		console.error(
+			`\n[FAIL] index=${context.index}${context.mode ? ` mode=${context.mode}` : ""}: ${message}`,
+		);
+		console.error(`Resume with: --resume ${context.logPath}\n`);
+		throw err;
+	}
 }
 
 // --- TSV helpers ---

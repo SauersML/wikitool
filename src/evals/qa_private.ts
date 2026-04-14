@@ -5,6 +5,7 @@
 
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
@@ -12,14 +13,16 @@ import {
 	extractJson,
 	extractNumbers,
 	gradeWithModel,
-	initLog,
+	initEvalSession,
 	leadingLetterIs,
 	pairedPermutationTest,
+	parseResumeArg,
 	parseTsvRows,
 	runAgent,
+	runKey,
+	runOrLogError,
 	textContainsAnswerLetter,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -194,7 +197,13 @@ export function judge(question: PrivateQuestion, response: string): boolean {
 
 // --- Main ---
 
-async function runQuestion(q: PrivateQuestion, index: number, mode: "with-tool" | "without-tool") {
+async function runQuestion(
+	q: PrivateQuestion,
+	index: number,
+	mode: "with-tool" | "without-tool",
+	log: (entry: unknown) => Promise<void>,
+	appendRow: (row: string[]) => Promise<void>,
+): Promise<string[]> {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] =
@@ -221,24 +230,45 @@ async function runQuestion(q: PrivateQuestion, index: number, mode: "with-tool" 
 		`           correct=${isCorrect} reasoning=${reasoning.score}/5 tools=${result.toolCalls.length}`,
 	);
 
-	return {
-		question: q.question.slice(0, 80),
-		answer: q.answer,
-		answerType: q.answerType,
-		subject: q.subject,
-		category: q.category,
+	const row: string[] = [
+		q.question.slice(0, 80),
+		q.answer,
+		q.answerType,
+		q.subject,
+		q.category,
 		mode,
-		usedTool: String(result.usedTool),
+		String(result.usedTool),
 		toolQueries,
-		modelAnswer: result.answer,
-		isCorrect: String(isCorrect),
-		reasoningScore: String(reasoning.score),
-		reasoningNotes: reasoning.notes,
-		turns: String(result.turns),
-		inputTokens: String(result.inputTokens),
-		outputTokens: String(result.outputTokens),
-		durationMs: String(Math.round(result.durationMs)),
-	};
+		result.answer,
+		String(isCorrect),
+		String(reasoning.score),
+		reasoning.notes,
+		String(result.turns),
+		String(result.inputTokens),
+		String(result.outputTokens),
+		String(Math.round(result.durationMs)),
+	];
+
+	await log(
+		buildRunLogEntry({
+			index,
+			mode,
+			question: q.question,
+			expected: q.answer,
+			agentResult: result,
+			verdict: {
+				correct: isCorrect,
+				reasoning_score: reasoning.score,
+				reasoning_notes: reasoning.notes,
+				answer_type: q.answerType,
+			},
+			extra: { subject: q.subject, category: q.category },
+			tsvRow: row,
+		}),
+	);
+	await appendRow(row);
+
+	return row;
 }
 
 async function main() {
@@ -260,8 +290,6 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { path: logPath } = await initLog("qa_private");
-
 	const headers = [
 		"question",
 		"answer",
@@ -281,29 +309,35 @@ async function main() {
 		"duration_ms",
 	];
 
-	const rows: string[][] = [];
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "qa_private",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "qa_private",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex ?? null,
+		resumed_from: resume ?? null,
+	});
+
+	const rows: string[][] = [...resumedRows];
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode);
-			rows.push([
-				result.question,
-				result.answer,
-				result.answerType,
-				result.subject,
-				result.category,
-				result.mode,
-				result.usedTool,
-				result.toolQueries,
-				result.modelAnswer,
-				result.isCorrect,
-				result.reasoningScore,
-				result.reasoningNotes,
-				result.turns,
-				result.inputTokens,
-				result.outputTokens,
-				result.durationMs,
-			]);
+			const key = runKey(i, mode);
+			if (completed.has(key)) {
+				console.log(`  [${i}] ${mode.padEnd(12)} (already done — skipping)`);
+				continue;
+			}
+			const row = await runOrLogError(log, { index: i, mode, logPath }, () =>
+				runQuestion(q, i, mode, log, appendRow),
+			);
+			rows.push(row);
 		}
 	}
 
@@ -365,7 +399,6 @@ async function main() {
 	const totalOutput = rows.reduce((sum, r) => sum + Number(r[14]), 0);
 	console.log(`\n  Total tokens: ${totalInput} input, ${totalOutput} output`);
 
-	const tsvPath = await writeTsvResults("qa_private", headers, rows);
 	console.log(`  Log: ${logPath}`);
 	console.log(`  TSV: ${tsvPath}`);
 }

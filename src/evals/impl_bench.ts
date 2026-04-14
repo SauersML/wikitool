@@ -18,11 +18,12 @@ import {
 	createSeenContent,
 	createWikiMcpServer,
 	extractJson,
-	initLog,
+	initEvalSession,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // Eval-specific task prompt (coding-task framing + deliverable).
@@ -262,8 +263,8 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 		"IMPORTANT: After you are done, output the complete final Python code in your response as a single ```python fenced code block.",
 	].join("\n");
 
-	console.log(`\n[${index}] ${q.name} (${mode})`);
-	console.log(`  Launching Sonnet...`);
+	const tag = `[${index}][${mode}]`;
+	console.log(`${tag} ${q.name} — launching implementer...`);
 
 	const builtinTools = ["Read", "Write", "Bash"];
 	const allowedTools = ["Read", "Write", "Bash"];
@@ -287,7 +288,7 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 
 	const code = extractCode(result.answer, result.assistantTexts);
 
-	console.log(`  Sonnet done: ${result.turns} turns, tool_used=${result.usedTool}`);
+	console.log(`${tag} implementer done: ${result.turns} turns, tool_used=${result.usedTool}`);
 
 	// Save logs — full conversation, not just final answer
 	const logDir = `${import.meta.dir}/../../logs`;
@@ -327,6 +328,7 @@ async function implement(index: number, useTool: boolean): Promise<RunResult> {
 
 async function evaluate(index: number, code: string, mode: string): Promise<GradeResult> {
 	const q = QUESTIONS[index]!;
+	const tag = `[${index}][${mode}]`;
 	const workDir = await mkdtemp(join(tmpdir(), `eval-${sanitizeName(q.name)}-`));
 	const pyFile = `${sanitizeName(q.name)}.py`;
 
@@ -352,7 +354,7 @@ async function evaluate(index: number, code: string, mode: string): Promise<Grad
 		"```",
 	].join("\n");
 
-	console.log(`  Launching Opus evaluator...`);
+	console.log(`${tag} launching evaluator...`);
 
 	const result = await runAgent({
 		prompt,
@@ -384,7 +386,7 @@ async function evaluate(index: number, code: string, mode: string): Promise<Grad
 	);
 	await Bun.write(`${logDir}/impl_bench_${sanitizeName(q.name)}_${mode}_opus.json`, fullLog);
 
-	console.log(`  Opus done: ${result.turns} turns`);
+	console.log(`${tag} evaluator done: ${result.turns} turns`);
 
 	return parseGradeFromOutput(result.answer);
 }
@@ -418,6 +420,8 @@ async function runOne(
 	index: number,
 	useTool: boolean,
 ): Promise<{ run: RunResult; grade: GradeResult }> {
+	const mode = useTool ? "with-tool" : "no-tool";
+	const tag = `[${index}][${mode}]`;
 	const implResult = await implement(index, useTool);
 	const gradeResult = await evaluate(index, implResult.code, implResult.mode);
 
@@ -428,10 +432,9 @@ async function runOne(
 		gradeResult.completion;
 
 	console.log(
-		`  Grade: correctness=${gradeResult.correctness} helpfulness=${gradeResult.helpfulness} elegance=${gradeResult.elegance} completion=${gradeResult.completion} total=${total}/40`,
+		`${tag} grade: correctness=${gradeResult.correctness} helpfulness=${gradeResult.helpfulness} elegance=${gradeResult.elegance} completion=${gradeResult.completion} total=${total}/40 ran_ok=${gradeResult.ran_successfully}`,
 	);
-	console.log(`  Ran successfully: ${gradeResult.ran_successfully}`);
-	if (gradeResult.notes) console.log(`  Notes: ${gradeResult.notes}`);
+	if (gradeResult.notes) console.log(`${tag} notes: ${gradeResult.notes}`);
 
 	return { run: implResult, grade: gradeResult };
 }
@@ -445,44 +448,6 @@ async function runAll(): Promise<void> {
 	console.log(`Modes: with-tool, no-tool`);
 	console.log("");
 
-	const { log, path: logPath } = await initLog("impl_bench");
-	console.log(`Log: ${logPath}\n`);
-
-	const rows: string[][] = [];
-
-	for (let i = 0; i < QUESTIONS.length; i++) {
-		const q = QUESTIONS[i]!;
-		console.log(`\n${"=".repeat(60)}`);
-		console.log(`[${i}] ${q.name}`);
-		console.log("=".repeat(60));
-
-		for (const useTool of [true, false]) {
-			const { run, grade: g } = await runOne(i, useTool);
-			const total = g.correctness + g.helpfulness + g.elegance + g.completion;
-
-			await log({
-				timestamp: new Date().toISOString(),
-				index: i,
-				algorithm: q.name,
-				mode: run.mode,
-				grade: g,
-				total,
-			});
-
-			rows.push([
-				q.name,
-				run.mode,
-				String(g.correctness),
-				String(g.helpfulness),
-				String(g.elegance),
-				String(g.completion),
-				String(total),
-				String(g.ran_successfully),
-				g.notes,
-			]);
-		}
-	}
-
 	const headers = [
 		"algorithm",
 		"mode",
@@ -494,7 +459,117 @@ async function runAll(): Promise<void> {
 		"ran_successfully",
 		"notes",
 	];
-	await writeTsvResults("impl_bench", headers, rows);
+
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "impl_bench",
+		headers,
+		resume,
+	});
+	console.log(`Log: ${logPath}\n`);
+	await log({
+		event: "start",
+		eval: "impl_bench",
+		impl_model: IMPL_MODEL,
+		eval_model: EVAL_MODEL,
+		n_algorithms: QUESTIONS.length,
+		modes: ["with-tool", "no-tool"],
+		resumed_from: resume ?? null,
+	});
+
+	// Build every (algorithm × mode) job, then fan them all out concurrently.
+	// Each job runs its own implement→evaluate chain sequentially; only the
+	// across-job work is parallelised. Per-job errors are captured and logged
+	// so a single failure (or mid-batch credit exhaustion) doesn't nuke the rest.
+	type JobResult =
+		| { ok: true; index: number; useTool: boolean; run: RunResult; grade: GradeResult }
+		| { ok: false; index: number; useTool: boolean; error: string };
+
+	const allJobs: { index: number; useTool: boolean }[] = [];
+	for (let i = 0; i < QUESTIONS.length; i++) {
+		for (const useTool of [true, false]) allJobs.push({ index: i, useTool });
+	}
+
+	// Skip any (algorithm, mode) pairs already completed in the resume log.
+	const jobs = allJobs.filter(
+		({ index, useTool }) => !completed.has(runKey(index, useTool ? "with-tool" : "no-tool")),
+	);
+	const skipped = allJobs.length - jobs.length;
+	if (skipped > 0) console.log(`Skipping ${skipped} already-completed jobs from prior run.\n`);
+
+	console.log(`Launching ${jobs.length} jobs in parallel...\n`);
+
+	const settled: JobResult[] = await Promise.all(
+		jobs.map(async ({ index, useTool }): Promise<JobResult> => {
+			const mode = useTool ? "with-tool" : "no-tool";
+			try {
+				const { run, grade } = await runOne(index, useTool);
+				return { ok: true, index, useTool, run, grade };
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				const stack = err instanceof Error ? err.stack : undefined;
+				console.error(`[${index}][${mode}] FAILED: ${message}`);
+				await log({
+					event: "error",
+					timestamp: new Date().toISOString(),
+					index,
+					mode,
+					error: message,
+					...(stack ? { stack } : {}),
+				});
+				return { ok: false, index, useTool, error: message };
+			}
+		}),
+	);
+
+	// Deterministic ordering in the TSV: by algorithm index, with-tool first.
+	settled.sort((a, b) => a.index - b.index || (a.useTool === b.useTool ? 0 : a.useTool ? -1 : 1));
+
+	const rows: string[][] = [...resumedRows];
+	for (const r of settled) {
+		if (!r.ok) continue;
+		const q = QUESTIONS[r.index]!;
+		const g = r.grade;
+		const total = g.correctness + g.helpfulness + g.elegance + g.completion;
+
+		const row: string[] = [
+			q.name,
+			r.run.mode,
+			String(g.correctness),
+			String(g.helpfulness),
+			String(g.elegance),
+			String(g.completion),
+			String(total),
+			String(g.ran_successfully),
+			g.notes,
+		];
+
+		await log({
+			event: "run",
+			timestamp: new Date().toISOString(),
+			index: r.index,
+			mode: r.run.mode,
+			algorithm: q.name,
+			used_tool: r.run.usedTool,
+			turns: r.run.turns,
+			input_tokens: r.run.inputTokens,
+			output_tokens: r.run.outputTokens,
+			grade: g,
+			total,
+			tsv_row: row,
+		});
+		await appendRow(row);
+		rows.push(row);
+	}
+
+	const failures = settled.filter((r): r is Extract<JobResult, { ok: false }> => !r.ok);
+	if (failures.length > 0) {
+		console.log(`\n${failures.length}/${settled.length} jobs failed:`);
+		for (const f of failures) {
+			console.log(`  [${f.index}][${f.useTool ? "with-tool" : "no-tool"}] ${f.error}`);
+		}
+		console.log(`\nResume with: --resume ${logPath}\n`);
+	}
 
 	// Summary
 	console.log(`\n${"=".repeat(60)}`);
@@ -528,6 +603,9 @@ async function runAll(): Promise<void> {
 			`  Permutation test (n=${withScores.length}): diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`,
 		);
 	}
+
+	console.log(`\n  Log: ${logPath}`);
+	console.log(`  TSV: ${tsvPath}`);
 }
 
 // --- CLI ---

@@ -11,12 +11,14 @@ import {
 	DEFAULT_MODEL,
 	extractFinalAnswer,
 	extractNumbers,
-	initLog,
+	initEvalSession,
 	matchesAny,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -144,9 +146,15 @@ export const QUESTIONS: ObscureQuestion[] = [
 	{
 		question:
 			"Who was the architect who designed Palmanova, the star-shaped fortress city in Friuli-Venezia Giulia, Italy, built in 1593?",
-		expectedAnswer: "Vincenzo Scamozzi",
+		expectedAnswer: "Vincenzo Scamozzi or Giulio Savorgnan",
 		judgeType: "string",
-		acceptableAnswers: ["Vincenzo Scamozzi", "Scamozzi"],
+		acceptableAnswers: [
+			"Vincenzo Scamozzi",
+			"Scamozzi",
+			"Giulio Savorgnan",
+			"Julius Savorgnan",
+			"Savorgnan",
+		],
 	},
 	{
 		question: "What is the height of the Chamarel Waterfall in Mauritius, in meters?",
@@ -227,7 +235,8 @@ async function runQuestion(
 	index: number,
 	mode: "with-tool" | "without-tool",
 	log: (entry: unknown) => Promise<void>,
-) {
+	appendRow: (row: string[]) => Promise<void>,
+): Promise<string[]> {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] = {
@@ -251,6 +260,20 @@ async function runQuestion(
 		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
 	);
 
+	const row: string[] = [
+		q.question,
+		q.expectedAnswer,
+		q.judgeType,
+		mode,
+		String(result.usedTool),
+		toolQueries,
+		result.answer,
+		String(isCorrect),
+		String(result.turns),
+		String(result.inputTokens),
+		String(result.outputTokens),
+	];
+
 	await log(
 		buildRunLogEntry({
 			index,
@@ -265,22 +288,12 @@ async function runQuestion(
 					? { numeric_value: q.numericValue, tolerance_pct: q.tolerancePct }
 					: { acceptable_answers: q.acceptableAnswers }),
 			},
+			tsvRow: row,
 		}),
 	);
+	await appendRow(row);
 
-	return {
-		question: q.question,
-		expectedAnswer: q.expectedAnswer,
-		judgeType: q.judgeType,
-		mode,
-		usedTool: String(result.usedTool),
-		toolQueries,
-		modelAnswer: result.answer,
-		isCorrect: String(isCorrect),
-		turns: String(result.turns),
-		inputTokens: String(result.inputTokens),
-		outputTokens: String(result.outputTokens),
-	};
+	return row;
 }
 
 async function main() {
@@ -302,16 +315,6 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("obscure_info");
-	await log({
-		event: "start",
-		eval: "obscure_info",
-		model: DEFAULT_MODEL,
-		n_questions: questionsToRun.length,
-		modes: ["with-tool", "without-tool"],
-		single_index: singleIndex ?? null,
-	});
-
 	const headers = [
 		"question",
 		"expected_answer",
@@ -326,24 +329,35 @@ async function main() {
 		"output_tokens",
 	];
 
-	const rows: string[][] = [];
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "obscure_info",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "obscure_info",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex ?? null,
+		resumed_from: resume ?? null,
+	});
+
+	const rows: string[][] = [...resumedRows];
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
-			rows.push([
-				result.question,
-				result.expectedAnswer,
-				result.judgeType,
-				result.mode,
-				result.usedTool,
-				result.toolQueries,
-				result.modelAnswer,
-				result.isCorrect,
-				result.turns,
-				result.inputTokens,
-				result.outputTokens,
-			]);
+			const key = runKey(i, mode);
+			if (completed.has(key)) {
+				console.log(`  [${i}] ${mode.padEnd(12)} (already done — skipping)`);
+				continue;
+			}
+			const row = await runOrLogError(log, { index: i, mode, logPath }, () =>
+				runQuestion(q, i, mode, log, appendRow),
+			);
+			rows.push(row);
 		}
 	}
 
@@ -395,7 +409,6 @@ async function main() {
 	const totalOutput = rows.reduce((sum, r) => sum + Number(r[10]), 0);
 	console.log(`\n  Total tokens: ${totalInput} input, ${totalOutput} output`);
 
-	const tsvPath = await writeTsvResults("obscure_info", headers, rows);
 	console.log(`  Log: ${logPath}`);
 	console.log(`  TSV: ${tsvPath}`);
 }

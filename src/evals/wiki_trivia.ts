@@ -11,12 +11,14 @@ import {
 	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractFinalAnswer,
-	initLog,
+	initEvalSession,
 	matchesAny,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -48,8 +50,14 @@ export const QUESTIONS: TriviaQuestion[] = [
 	{
 		question:
 			"What is the name of the problem that uses SVD to compute the optimal rotation aligning one set of points with another, often used in molecular structure comparison?",
-		answer: "Kabsch algorithm",
-		acceptableAnswers: ["Kabsch algorithm", "Kabsch"],
+		answer: "Kabsch algorithm / Orthogonal Procrustes problem",
+		acceptableAnswers: [
+			"Kabsch algorithm",
+			"Kabsch",
+			"Orthogonal Procrustes",
+			"Procrustes problem",
+			"Procrustes",
+		],
 		topic: "Computational Biology",
 		datasetIndex: 522,
 	},
@@ -262,7 +270,8 @@ async function runQuestion(
 	index: number,
 	mode: "with-tool" | "without-tool",
 	log: (entry: unknown) => Promise<void>,
-) {
+	appendRow: (row: string[]) => Promise<void>,
+): Promise<string[]> {
 	console.log(`  [${index}] ${mode.padEnd(12)} "${q.question.slice(0, 60)}..."`);
 
 	const agentOpts: Parameters<typeof runAgent>[0] = {
@@ -286,6 +295,20 @@ async function runQuestion(
 		`           answer="${result.answer.slice(0, 80)}" correct=${isCorrect} tools=${result.toolCalls.length}`,
 	);
 
+	const row: string[] = [
+		q.question,
+		q.answer,
+		q.topic,
+		mode,
+		String(result.usedTool),
+		toolQueries,
+		result.answer,
+		String(isCorrect),
+		String(result.turns),
+		String(result.inputTokens),
+		String(result.outputTokens),
+	];
+
 	await log(
 		buildRunLogEntry({
 			index,
@@ -294,22 +317,12 @@ async function runQuestion(
 			expected: q.acceptableAnswers,
 			agentResult: result,
 			verdict: { correct: isCorrect, canonical_expected: q.answer, topic: q.topic },
+			tsvRow: row,
 		}),
 	);
+	await appendRow(row);
 
-	return {
-		question: q.question,
-		expectedAnswer: q.answer,
-		topic: q.topic,
-		mode,
-		usedTool: String(result.usedTool),
-		toolQueries,
-		modelAnswer: result.answer,
-		isCorrect: String(isCorrect),
-		turns: String(result.turns),
-		inputTokens: String(result.inputTokens),
-		outputTokens: String(result.outputTokens),
-	};
+	return row;
 }
 
 async function main() {
@@ -331,16 +344,6 @@ async function main() {
 	);
 	console.log(`Modes: with-tool, without-tool\n`);
 
-	const { log, path: logPath } = await initLog("wiki_trivia");
-	await log({
-		event: "start",
-		eval: "wiki_trivia",
-		model: DEFAULT_MODEL,
-		n_questions: questionsToRun.length,
-		modes: ["with-tool", "without-tool"],
-		single_index: singleIndex ?? null,
-	});
-
 	const headers = [
 		"question",
 		"expected_answer",
@@ -355,24 +358,35 @@ async function main() {
 		"output_tokens",
 	];
 
-	const rows: string[][] = [];
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "wiki_trivia",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "wiki_trivia",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex ?? null,
+		resumed_from: resume ?? null,
+	});
+
+	const rows: string[][] = [...resumedRows];
 
 	for (const { q, i } of questionsToRun) {
 		for (const mode of ["with-tool", "without-tool"] as const) {
-			const result = await runQuestion(q, i, mode, log);
-			rows.push([
-				result.question,
-				result.expectedAnswer,
-				result.topic,
-				result.mode,
-				result.usedTool,
-				result.toolQueries,
-				result.modelAnswer,
-				result.isCorrect,
-				result.turns,
-				result.inputTokens,
-				result.outputTokens,
-			]);
+			const key = runKey(i, mode);
+			if (completed.has(key)) {
+				console.log(`  [${i}] ${mode.padEnd(12)} (already done — skipping)`);
+				continue;
+			}
+			const row = await runOrLogError(log, { index: i, mode, logPath }, () =>
+				runQuestion(q, i, mode, log, appendRow),
+			);
+			rows.push(row);
 		}
 	}
 
@@ -425,7 +439,6 @@ async function main() {
 	const totalOutput = rows.reduce((sum, r) => sum + Number(r[10]), 0);
 	console.log(`\n  Total tokens: ${totalInput} input, ${totalOutput} output`);
 
-	const tsvPath = await writeTsvResults("wiki_trivia", headers, rows);
 	console.log(`  Log: ${logPath}`);
 	console.log(`  TSV: ${tsvPath}`);
 }

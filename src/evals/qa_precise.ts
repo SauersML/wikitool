@@ -5,16 +5,19 @@
 
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractJson,
 	GRADER_MODEL,
-	initLog,
+	initEvalSession,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -182,93 +185,6 @@ async function main() {
 	);
 	console.log("");
 
-	await initLog("qa_precise");
-
-	const rows: string[][] = [];
-	const withToolResults: { correct: boolean; quality: number }[] = [];
-	const withoutToolResults: { correct: boolean; quality: number }[] = [];
-	let totalInputTokens = 0;
-	let totalOutputTokens = 0;
-
-	for (let i = 0; i < questionsToRun.length; i++) {
-		const q = questionsToRun[i]!;
-		const qIndex = startIndex + i;
-		console.log(`[${qIndex}] ${q.domain}: ${q.question.slice(0, 70)}...`);
-
-		// --- With tool ---
-		console.log("  Running WITH tool...");
-		const wikiServer = createWikiMcpServer({ seen: createSeenContent() });
-		const withTool = await runAgent({
-			system: SYSTEM_PROMPT,
-			prompt: q.question,
-			mcpServers: { wiki: wikiServer },
-			allowedTools: [WIKI_TOOL_NAME],
-		});
-
-		const toolQueries = withTool.toolCalls
-			.map((tc) => (tc.input["query"] as string) ?? "")
-			.join("; ");
-
-		const withGradePrompt = buildGradePrompt(q.question, q.expected, withTool.answer);
-		const withGradeRaw = await gradeWithSonnet(withGradePrompt);
-		const withGrade = parseGradeResponse(withGradeRaw);
-		withToolResults.push(withGrade);
-		totalInputTokens += withTool.inputTokens;
-		totalOutputTokens += withTool.outputTokens;
-
-		console.log(
-			`  WITH tool:    correct=${withGrade.correct} quality=${withGrade.quality} turns=${withTool.turns} tool_used=${withTool.usedTool}`,
-		);
-
-		rows.push([
-			q.question.slice(0, 80),
-			q.domain,
-			"with_tool",
-			String(withTool.usedTool),
-			toolQueries,
-			withTool.answer.slice(0, 200),
-			String(withGrade.correct),
-			String(withGrade.quality),
-			String(withTool.turns),
-			String(withTool.inputTokens),
-			String(withTool.outputTokens),
-		]);
-
-		// --- Without tool ---
-		console.log("  Running WITHOUT tool...");
-		const withoutTool = await runAgent({
-			system: NO_TOOL_SYSTEM_PROMPT,
-			prompt: q.question,
-		});
-
-		const withoutGradePrompt = buildGradePrompt(q.question, q.expected, withoutTool.answer);
-		const withoutGradeRaw = await gradeWithSonnet(withoutGradePrompt);
-		const withoutGrade = parseGradeResponse(withoutGradeRaw);
-		withoutToolResults.push(withoutGrade);
-		totalInputTokens += withoutTool.inputTokens;
-		totalOutputTokens += withoutTool.outputTokens;
-
-		console.log(
-			`  WITHOUT tool:  correct=${withoutGrade.correct} quality=${withoutGrade.quality} turns=${withoutTool.turns}`,
-		);
-		console.log("");
-
-		rows.push([
-			q.question.slice(0, 80),
-			q.domain,
-			"without_tool",
-			"false",
-			"",
-			withoutTool.answer.slice(0, 200),
-			String(withoutGrade.correct),
-			String(withoutGrade.quality),
-			String(withoutTool.turns),
-			String(withoutTool.inputTokens),
-			String(withoutTool.outputTokens),
-		]);
-	}
-
-	// --- Write TSV ---
 	const headers = [
 		"question",
 		"domain",
@@ -282,7 +198,170 @@ async function main() {
 		"input_tokens",
 		"output_tokens",
 	];
-	await writeTsvResults("qa_precise", headers, rows);
+
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "qa_precise",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "qa_precise",
+		model: DEFAULT_MODEL,
+		grader: GRADER_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with_tool", "without_tool"],
+		single_index: singleIndex ?? null,
+		resumed_from: resume ?? null,
+	});
+	const rows: string[][] = [...resumedRows];
+	const withToolResults: { correct: boolean; quality: number }[] = [];
+	const withoutToolResults: { correct: boolean; quality: number }[] = [];
+
+	// Rehydrate score arrays from resumed rows so the summary reflects prior work.
+	for (const r of resumedRows) {
+		const mode = r[2];
+		const correct = r[6] === "true";
+		const quality = Number(r[7]);
+		if (mode === "with_tool") withToolResults.push({ correct, quality });
+		else if (mode === "without_tool") withoutToolResults.push({ correct, quality });
+	}
+
+	for (let i = 0; i < questionsToRun.length; i++) {
+		const q = questionsToRun[i]!;
+		const qIndex = startIndex + i;
+		console.log(`[${qIndex}] ${q.domain}: ${q.question.slice(0, 70)}...`);
+
+		// --- With tool ---
+		if (completed.has(runKey(qIndex, "with_tool"))) {
+			console.log("  WITH tool: (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: qIndex, mode: "with_tool", logPath },
+				async () => {
+					console.log("  Running WITH tool...");
+					const wikiServer = createWikiMcpServer({ seen: createSeenContent() });
+					const withTool = await runAgent({
+						system: SYSTEM_PROMPT,
+						prompt: q.question,
+						mcpServers: { wiki: wikiServer },
+						allowedTools: [WIKI_TOOL_NAME],
+					});
+
+					const toolQueries = withTool.toolCalls
+						.map((tc) => (tc.input["query"] as string) ?? "")
+						.join("; ");
+
+					const withGradePrompt = buildGradePrompt(q.question, q.expected, withTool.answer);
+					const withGradeRaw = await gradeWithSonnet(withGradePrompt);
+					const withGrade = parseGradeResponse(withGradeRaw);
+					withToolResults.push(withGrade);
+
+					console.log(
+						`  WITH tool:    correct=${withGrade.correct} quality=${withGrade.quality} turns=${withTool.turns} tool_used=${withTool.usedTool}`,
+					);
+
+					const r: string[] = [
+						q.question.slice(0, 80),
+						q.domain,
+						"with_tool",
+						String(withTool.usedTool),
+						toolQueries,
+						withTool.answer.slice(0, 200),
+						String(withGrade.correct),
+						String(withGrade.quality),
+						String(withTool.turns),
+						String(withTool.inputTokens),
+						String(withTool.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: qIndex,
+							mode: "with_tool",
+							question: q.question,
+							expected: q.expected,
+							agentResult: withTool,
+							verdict: {
+								correct: withGrade.correct,
+								quality: withGrade.quality,
+								grade_raw: withGradeRaw,
+							},
+							extra: { domain: q.domain },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+
+		// --- Without tool ---
+		if (completed.has(runKey(qIndex, "without_tool"))) {
+			console.log("  WITHOUT tool: (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: qIndex, mode: "without_tool", logPath },
+				async () => {
+					console.log("  Running WITHOUT tool...");
+					const withoutTool = await runAgent({
+						system: NO_TOOL_SYSTEM_PROMPT,
+						prompt: q.question,
+					});
+
+					const withoutGradePrompt = buildGradePrompt(q.question, q.expected, withoutTool.answer);
+					const withoutGradeRaw = await gradeWithSonnet(withoutGradePrompt);
+					const withoutGrade = parseGradeResponse(withoutGradeRaw);
+					withoutToolResults.push(withoutGrade);
+
+					console.log(
+						`  WITHOUT tool:  correct=${withoutGrade.correct} quality=${withoutGrade.quality} turns=${withoutTool.turns}`,
+					);
+					console.log("");
+
+					const r: string[] = [
+						q.question.slice(0, 80),
+						q.domain,
+						"without_tool",
+						"false",
+						"",
+						withoutTool.answer.slice(0, 200),
+						String(withoutGrade.correct),
+						String(withoutGrade.quality),
+						String(withoutTool.turns),
+						String(withoutTool.inputTokens),
+						String(withoutTool.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: qIndex,
+							mode: "without_tool",
+							question: q.question,
+							expected: q.expected,
+							agentResult: withoutTool,
+							verdict: {
+								correct: withoutGrade.correct,
+								quality: withoutGrade.quality,
+								grade_raw: withoutGradeRaw,
+							},
+							extra: { domain: q.domain },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+	}
+
+	const totalInputTokens = rows.reduce((s, r) => s + Number(r[9]), 0);
+	const totalOutputTokens = rows.reduce((s, r) => s + Number(r[10]), 0);
 
 	// --- Summary ---
 	const withCorrectPct =
@@ -319,6 +398,27 @@ async function main() {
 	console.log(
 		`  Permutation test (quality): diff=${permQuality.diff.toFixed(3)}, p=${permQuality.p.toFixed(4)}`,
 	);
+
+	await log({
+		event: "summary",
+		eval: "qa_precise",
+		with_tool: {
+			correct: withToolResults.filter((r) => r.correct).length,
+			mean_quality: withMeanQuality,
+			total: withToolResults.length,
+		},
+		without_tool: {
+			correct: withoutToolResults.filter((r) => r.correct).length,
+			mean_quality: withoutMeanQuality,
+			total: withoutToolResults.length,
+		},
+		total_tokens: { input: totalInputTokens, output: totalOutputTokens },
+		permutation_correct: permCorrect,
+		permutation_quality: permQuality,
+	});
+
+	console.log(`  Log: ${logPath}`);
+	console.log(`  TSV: ${tsvPath}`);
 }
 
 // Only run when executed directly, not when imported

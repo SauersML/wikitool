@@ -9,12 +9,14 @@ import {
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
-	initLog,
+	initEvalSession,
 	matchesAny,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -89,125 +91,6 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	const { log } = await initLog("unnecessary_tool");
-	await log({
-		event: "start",
-		eval: "unnecessary_tool",
-		model: DEFAULT_MODEL,
-		n_questions: questionsToRun.length,
-		modes: ["with-tool", "without-tool"],
-		single_index: singleIndex,
-	});
-	const rows: string[][] = [];
-
-	let withToolUsedCount = 0;
-	let withToolCorrect = 0;
-	let withoutToolCorrect = 0;
-	let totalQuestions = 0;
-
-	const withToolTokens: number[] = [];
-	const withoutToolTokens: number[] = [];
-	let totalTokens = 0;
-
-	for (const q of questionsToRun) {
-		totalQuestions++;
-		const idx = singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
-		console.log(`--- Q${idx}: ${q.question}`);
-		console.log(`    expected: ${q.acceptableAnswers.join(", ")}`);
-
-		// Mode 1: with-tool
-		console.log("  [with-tool] running...");
-		const seen = createSeenContent();
-		const wikiServer = createWikiMcpServer({ seen });
-		const withResult: AgentResult = await runAgent({
-			system: SYSTEM_PROMPT,
-			prompt: q.question,
-			mcpServers: { wiki: wikiServer },
-			allowedTools: [WIKI_TOOL_NAME],
-		});
-
-		const toolQueries = withResult.toolCalls
-			.map((tc) => (tc.input["query"] as string) ?? "")
-			.join("; ");
-		const withCorrect = matchesAny(withResult.answer, q.acceptableAnswers);
-
-		if (withResult.usedTool) withToolUsedCount++;
-		if (withCorrect) withToolCorrect++;
-		const withTotalTokens = withResult.inputTokens + withResult.outputTokens;
-		withToolTokens.push(withTotalTokens);
-		totalTokens += withTotalTokens;
-
-		console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
-		console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
-		console.log(`  [with-tool] correct: ${withCorrect}`);
-
-		await log(
-			buildRunLogEntry({
-				index: idx,
-				mode: "with-tool",
-				question: q.question,
-				expected: q.acceptableAnswers,
-				agentResult: withResult,
-				verdict: { correct: withCorrect, used_tool: withResult.usedTool },
-			}),
-		);
-
-		rows.push([
-			q.question,
-			q.acceptableAnswers.join(", "),
-			"with-tool",
-			String(withResult.usedTool),
-			toolQueries,
-			withResult.answer,
-			String(withCorrect),
-			String(withResult.turns),
-			String(withResult.inputTokens),
-			String(withResult.outputTokens),
-		]);
-
-		// Mode 2: without-tool
-		console.log("  [without-tool] running...");
-		const withoutResult: AgentResult = await runAgent({
-			system: NO_TOOL_SYSTEM_PROMPT,
-			prompt: q.question,
-		});
-
-		const withoutCorrect = matchesAny(withoutResult.answer, q.acceptableAnswers);
-		if (withoutCorrect) withoutToolCorrect++;
-		const withoutTotalTokens = withoutResult.inputTokens + withoutResult.outputTokens;
-		withoutToolTokens.push(withoutTotalTokens);
-		totalTokens += withoutTotalTokens;
-
-		console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
-		console.log(`  [without-tool] correct: ${withoutCorrect}`);
-		console.log();
-
-		await log(
-			buildRunLogEntry({
-				index: idx,
-				mode: "without-tool",
-				question: q.question,
-				expected: q.acceptableAnswers,
-				agentResult: withoutResult,
-				verdict: { correct: withoutCorrect },
-			}),
-		);
-
-		rows.push([
-			q.question,
-			q.acceptableAnswers.join(", "),
-			"without-tool",
-			String(withoutResult.usedTool),
-			"",
-			withoutResult.answer,
-			String(withoutCorrect),
-			String(withoutResult.turns),
-			String(withoutResult.inputTokens),
-			String(withoutResult.outputTokens),
-		]);
-	}
-
-	// Write TSV
 	const headers = [
 		"question",
 		"expected_answer",
@@ -220,15 +103,160 @@ async function main() {
 		"input_tokens",
 		"output_tokens",
 	];
-	await writeTsvResults("unnecessary_tool", headers, rows);
 
-	// Summary
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "unnecessary_tool",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "unnecessary_tool",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex,
+		resumed_from: resume ?? null,
+	});
+	const rows: string[][] = [...resumedRows];
+
+	let totalQuestions = 0;
+
+	for (const q of questionsToRun) {
+		totalQuestions++;
+		const idx = singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
+		console.log(`--- Q${idx}: ${q.question}`);
+		console.log(`    expected: ${q.acceptableAnswers.join(", ")}`);
+
+		// Mode 1: with-tool
+		if (completed.has(runKey(idx, "with-tool"))) {
+			console.log("  [with-tool] (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: idx, mode: "with-tool", logPath },
+				async () => {
+					console.log("  [with-tool] running...");
+					const seen = createSeenContent();
+					const wikiServer = createWikiMcpServer({ seen });
+					const withResult: AgentResult = await runAgent({
+						system: SYSTEM_PROMPT,
+						prompt: q.question,
+						mcpServers: { wiki: wikiServer },
+						allowedTools: [WIKI_TOOL_NAME],
+					});
+
+					const toolQueries = withResult.toolCalls
+						.map((tc) => (tc.input["query"] as string) ?? "")
+						.join("; ");
+					const withCorrect = matchesAny(withResult.answer, q.acceptableAnswers);
+
+					console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
+					console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
+					console.log(`  [with-tool] correct: ${withCorrect}`);
+
+					const r: string[] = [
+						q.question,
+						q.acceptableAnswers.join(", "),
+						"with-tool",
+						String(withResult.usedTool),
+						toolQueries,
+						withResult.answer,
+						String(withCorrect),
+						String(withResult.turns),
+						String(withResult.inputTokens),
+						String(withResult.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: idx,
+							mode: "with-tool",
+							question: q.question,
+							expected: q.acceptableAnswers,
+							agentResult: withResult,
+							verdict: { correct: withCorrect, used_tool: withResult.usedTool },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+
+		// Mode 2: without-tool
+		if (completed.has(runKey(idx, "without-tool"))) {
+			console.log("  [without-tool] (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: idx, mode: "without-tool", logPath },
+				async () => {
+					console.log("  [without-tool] running...");
+					const withoutResult: AgentResult = await runAgent({
+						system: NO_TOOL_SYSTEM_PROMPT,
+						prompt: q.question,
+					});
+
+					const withoutCorrect = matchesAny(withoutResult.answer, q.acceptableAnswers);
+
+					console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
+					console.log(`  [without-tool] correct: ${withoutCorrect}`);
+					console.log();
+
+					const r: string[] = [
+						q.question,
+						q.acceptableAnswers.join(", "),
+						"without-tool",
+						String(withoutResult.usedTool),
+						"",
+						withoutResult.answer,
+						String(withoutCorrect),
+						String(withoutResult.turns),
+						String(withoutResult.inputTokens),
+						String(withoutResult.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: idx,
+							mode: "without-tool",
+							question: q.question,
+							expected: q.acceptableAnswers,
+							agentResult: withoutResult,
+							verdict: { correct: withoutCorrect },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+	}
+
+	// Summary — derived from the streamed TSV rows so resume + partial work is reflected.
+	const withToolRowsForSummary = rows.filter((r) => r[2] === "with-tool");
+	const withoutToolRowsForSummary = rows.filter((r) => r[2] === "without-tool");
+	const withToolUsedCount = withToolRowsForSummary.filter((r) => r[3] === "true").length;
+	const withToolCorrect = withToolRowsForSummary.filter((r) => r[6] === "true").length;
+	const withoutToolCorrect = withoutToolRowsForSummary.filter((r) => r[6] === "true").length;
+	const withToolTokens = withToolRowsForSummary.map((r) => Number(r[8]) + Number(r[9]));
+	const withoutToolTokens = withoutToolRowsForSummary.map((r) => Number(r[8]) + Number(r[9]));
+	const totalTokens = [...withToolTokens, ...withoutToolTokens].reduce((a, b) => a + b, 0);
+
 	const pctUsedTool = ((withToolUsedCount / totalQuestions) * 100).toFixed(1);
 	const pctCorrectWith = ((withToolCorrect / totalQuestions) * 100).toFixed(1);
 	const pctCorrectWithout = ((withoutToolCorrect / totalQuestions) * 100).toFixed(1);
 
-	const meanWithTokens = withToolTokens.reduce((a, b) => a + b, 0) / withToolTokens.length;
-	const meanWithoutTokens = withoutToolTokens.reduce((a, b) => a + b, 0) / withoutToolTokens.length;
+	const meanWithTokens = withToolTokens.length
+		? withToolTokens.reduce((a, b) => a + b, 0) / withToolTokens.length
+		: 0;
+	const meanWithoutTokens = withoutToolTokens.length
+		? withoutToolTokens.reduce((a, b) => a + b, 0) / withoutToolTokens.length
+		: 0;
 
 	console.log("=".repeat(60));
 	console.log("RESULTS");
@@ -262,6 +290,9 @@ async function main() {
 		total_tokens: totalTokens,
 		permutation: perm,
 	});
+
+	console.log(`Log: ${logPath}`);
+	console.log(`TSV: ${tsvPath}`);
 }
 
 main();

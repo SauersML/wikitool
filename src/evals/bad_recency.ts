@@ -6,17 +6,20 @@
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractJson,
 	GRADER_MODEL,
-	initLog,
+	initEvalSession,
 	pairedPermutationTest,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	stripCodeFences,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // --- Types ---
@@ -187,101 +190,6 @@ async function main() {
 	console.log(`Model: ${DEFAULT_MODEL}`);
 	console.log(`Running: ${label}\n`);
 
-	await initLog("bad_recency");
-	const rows: string[][] = [];
-
-	let usedToolCount = 0;
-	let hallucinatedWithTool = 0;
-	let hallucinatedWithoutTool = 0;
-	let totalTokens = 0;
-	let totalQuestions = 0;
-	let halScoreWithToolSum = 0;
-	let halScoreWithoutToolSum = 0;
-
-	for (const q of questionsToRun) {
-		totalQuestions++;
-		const idx = singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
-		console.log(`--- Q${idx}: ${q.question}`);
-		console.log(`    reason: ${q.reason}`);
-
-		// Mode 1: with-tool
-		console.log("  [with-tool] running...");
-		const seen = createSeenContent();
-		const wikiServer = createWikiMcpServer({ seen });
-		const withResult: AgentResult = await runAgent({
-			system: SYSTEM_PROMPT,
-			prompt: q.question,
-			mcpServers: { wiki: wikiServer },
-			allowedTools: [WIKI_TOOL_NAME],
-		});
-
-		const toolQueries = withResult.toolCalls
-			.map((tc) => (tc.input["query"] as string) ?? "")
-			.join("; ");
-		const withHalScore = await judgeWithSonnet(q.question, withResult.answer);
-		const withHallucinated = withHalScore.score >= 3;
-
-		if (withResult.usedTool) usedToolCount++;
-		if (withHallucinated) hallucinatedWithTool++;
-		halScoreWithToolSum += withHalScore.score;
-		totalTokens += withResult.inputTokens + withResult.outputTokens;
-
-		console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
-		console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
-		console.log(`  [with-tool] hal_score: ${withHalScore.score} (${withHalScore.explanation})`);
-
-		rows.push([
-			q.question,
-			q.reason,
-			"with-tool",
-			String(withResult.usedTool),
-			toolQueries,
-			withResult.answer,
-			String(withHalScore.score),
-			withHalScore.explanation,
-			String(q.hallucinationProne ?? false),
-			String(withResult.turns),
-			String(withResult.inputTokens),
-			String(withResult.outputTokens),
-		]);
-
-		// Mode 2: without-tool
-		console.log("  [without-tool] running...");
-		const withoutResult: AgentResult = await runAgent({
-			system: NO_TOOL_SYSTEM_PROMPT,
-			prompt: q.question,
-		});
-
-		const withoutHalScore = await judgeWithSonnet(q.question, withoutResult.answer);
-		const withoutHallucinated = withoutHalScore.score >= 3;
-
-		if (withoutHallucinated) hallucinatedWithoutTool++;
-		halScoreWithoutToolSum += withoutHalScore.score;
-		totalTokens += withoutResult.inputTokens + withoutResult.outputTokens;
-
-		console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
-		console.log(
-			`  [without-tool] hal_score: ${withoutHalScore.score} (${withoutHalScore.explanation})`,
-		);
-		console.log();
-
-		rows.push([
-			q.question,
-			q.reason,
-			"without-tool",
-			String(withoutResult.usedTool),
-			"",
-			withoutResult.answer,
-			String(withoutHalScore.score),
-			withoutHalScore.explanation,
-			String(q.hallucinationProne ?? false),
-			String(withoutResult.turns),
-			String(withoutResult.inputTokens),
-			String(withoutResult.outputTokens),
-		]);
-	}
-
-	// Write TSV
 	const headers = [
 		"question",
 		"reason_no_article",
@@ -296,15 +204,175 @@ async function main() {
 		"input_tokens",
 		"output_tokens",
 	];
-	await writeTsvResults("bad_recency", headers, rows);
 
-	// Summary
-	const pctUsedTool = ((usedToolCount / totalQuestions) * 100).toFixed(1);
-	const pctHalWithTool = ((hallucinatedWithTool / totalQuestions) * 100).toFixed(1);
-	const pctHalWithoutTool = ((hallucinatedWithoutTool / totalQuestions) * 100).toFixed(1);
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "bad_recency",
+		headers,
+		resume,
+	});
+	await log({
+		event: "start",
+		eval: "bad_recency",
+		model: DEFAULT_MODEL,
+		n_questions: questionsToRun.length,
+		modes: ["with-tool", "without-tool"],
+		single_index: singleIndex,
+		resumed_from: resume ?? null,
+	});
+	const rows: string[][] = [...resumedRows];
 
-	const avgHalScoreWithTool = (halScoreWithToolSum / totalQuestions).toFixed(2);
-	const avgHalScoreWithoutTool = (halScoreWithoutToolSum / totalQuestions).toFixed(2);
+	let totalQuestions = 0;
+
+	for (const q of questionsToRun) {
+		totalQuestions++;
+		const idx = singleIndex != null ? singleIndex : questionsToRun.indexOf(q);
+		console.log(`--- Q${idx}: ${q.question}`);
+		console.log(`    reason: ${q.reason}`);
+
+		// Mode 1: with-tool
+		if (completed.has(runKey(idx, "with-tool"))) {
+			console.log("  [with-tool] (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: idx, mode: "with-tool", logPath },
+				async () => {
+					console.log("  [with-tool] running...");
+					const seen = createSeenContent();
+					const wikiServer = createWikiMcpServer({ seen });
+					const withResult: AgentResult = await runAgent({
+						system: SYSTEM_PROMPT,
+						prompt: q.question,
+						mcpServers: { wiki: wikiServer },
+						allowedTools: [WIKI_TOOL_NAME],
+					});
+
+					const toolQueries = withResult.toolCalls
+						.map((tc) => (tc.input["query"] as string) ?? "")
+						.join("; ");
+					const withHalScore = await judgeWithSonnet(q.question, withResult.answer);
+
+					console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
+					console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
+					console.log(
+						`  [with-tool] hal_score: ${withHalScore.score} (${withHalScore.explanation})`,
+					);
+
+					const r: string[] = [
+						q.question,
+						q.reason,
+						"with-tool",
+						String(withResult.usedTool),
+						toolQueries,
+						withResult.answer,
+						String(withHalScore.score),
+						withHalScore.explanation,
+						String(q.hallucinationProne ?? false),
+						String(withResult.turns),
+						String(withResult.inputTokens),
+						String(withResult.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: idx,
+							mode: "with-tool",
+							question: q.question,
+							agentResult: withResult,
+							verdict: {
+								hallucination_score: withHalScore.score,
+								hallucination_explanation: withHalScore.explanation,
+								hallucination_prone: q.hallucinationProne ?? false,
+							},
+							extra: { reason_no_article: q.reason },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+
+		// Mode 2: without-tool
+		if (completed.has(runKey(idx, "without-tool"))) {
+			console.log("  [without-tool] (already done — skipping)");
+		} else {
+			const row = await runOrLogError(
+				log,
+				{ index: idx, mode: "without-tool", logPath },
+				async () => {
+					console.log("  [without-tool] running...");
+					const withoutResult: AgentResult = await runAgent({
+						system: NO_TOOL_SYSTEM_PROMPT,
+						prompt: q.question,
+					});
+
+					const withoutHalScore = await judgeWithSonnet(q.question, withoutResult.answer);
+
+					console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
+					console.log(
+						`  [without-tool] hal_score: ${withoutHalScore.score} (${withoutHalScore.explanation})`,
+					);
+					console.log();
+
+					const r: string[] = [
+						q.question,
+						q.reason,
+						"without-tool",
+						String(withoutResult.usedTool),
+						"",
+						withoutResult.answer,
+						String(withoutHalScore.score),
+						withoutHalScore.explanation,
+						String(q.hallucinationProne ?? false),
+						String(withoutResult.turns),
+						String(withoutResult.inputTokens),
+						String(withoutResult.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: idx,
+							mode: "without-tool",
+							question: q.question,
+							agentResult: withoutResult,
+							verdict: {
+								hallucination_score: withoutHalScore.score,
+								hallucination_explanation: withoutHalScore.explanation,
+								hallucination_prone: q.hallucinationProne ?? false,
+							},
+							extra: { reason_no_article: q.reason },
+							tsvRow: r,
+						}),
+					);
+					await appendRow(r);
+					return r;
+				},
+			);
+			rows.push(row);
+		}
+	}
+
+	// Summary — recomputed from rows so resumed runs are included.
+	const withToolRows = rows.filter((r) => r[2] === "with-tool");
+	const withoutToolRows = rows.filter((r) => r[2] === "without-tool");
+	const usedToolCount = withToolRows.filter((r) => r[3] === "true").length;
+	const hallucinatedWithTool = withToolRows.filter((r) => Number(r[6]) >= 3).length;
+	const hallucinatedWithoutTool = withoutToolRows.filter((r) => Number(r[6]) >= 3).length;
+	const halScoreWithToolSum = withToolRows.reduce((s, r) => s + Number(r[6]), 0);
+	const halScoreWithoutToolSum = withoutToolRows.reduce((s, r) => s + Number(r[6]), 0);
+	const totalTokens = rows.reduce((s, r) => s + Number(r[10]) + Number(r[11]), 0);
+	const denom = totalQuestions || 1;
+	const withToolDenom = withToolRows.length || 1;
+	const withoutToolDenom = withoutToolRows.length || 1;
+
+	const pctUsedTool = ((usedToolCount / denom) * 100).toFixed(1);
+	const pctHalWithTool = ((hallucinatedWithTool / denom) * 100).toFixed(1);
+	const pctHalWithoutTool = ((hallucinatedWithoutTool / denom) * 100).toFixed(1);
+
+	const avgHalScoreWithTool = (halScoreWithToolSum / withToolDenom).toFixed(2);
+	const avgHalScoreWithoutTool = (halScoreWithoutToolSum / withoutToolDenom).toFixed(2);
 
 	console.log("=".repeat(50));
 	console.log("RESULTS");
@@ -320,12 +388,28 @@ async function main() {
 	console.log(`Mean hallucination score (without-tool): ${avgHalScoreWithoutTool} / 5`);
 	console.log(`Total tokens used: ${totalTokens}`);
 
-	const withToolScores = rows.filter((r) => r[2] === "with-tool").map((r) => Number(r[6]));
-	const withoutToolScores = rows.filter((r) => r[2] === "without-tool").map((r) => Number(r[6]));
+	const withToolScores = withToolRows.map((r) => Number(r[6]));
+	const withoutToolScores = withoutToolRows.map((r) => Number(r[6]));
 	const perm = pairedPermutationTest(withToolScores, withoutToolScores);
 	console.log(
 		`Permutation test (hallucination score): diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`,
 	);
+
+	await log({
+		event: "summary",
+		eval: "bad_recency",
+		n_questions: totalQuestions,
+		used_tool_count: usedToolCount,
+		hallucinated_with_tool: hallucinatedWithTool,
+		hallucinated_without_tool: hallucinatedWithoutTool,
+		avg_hal_score_with_tool: Number(avgHalScoreWithTool),
+		avg_hal_score_without_tool: Number(avgHalScoreWithoutTool),
+		total_tokens: totalTokens,
+		permutation: perm,
+	});
+
+	console.log(`Log: ${logPath}`);
+	console.log(`TSV: ${tsvPath}`);
 }
 
 main();

@@ -22,13 +22,15 @@ const HTML = `<!DOCTYPE html>
     --user-tint: #1a1814;
     --danger: #c46a6a;
     --ok: #8b9e82;
-    --mono: "SF Mono", "Cascadia Code", "Fira Code", Menlo, monospace;
+    --prose: "Iowan Old Style", "Palatino Linotype", "URW Palladio L", Charter, "Source Serif Pro", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
 
   body {
-    font-family: var(--mono);
+    font-family: var(--prose);
     background: var(--bg);
     color: var(--fg);
+    font-size: 17px;
     line-height: 1.7;
     min-height: 100vh;
     padding: 64px 24px 80px;
@@ -43,7 +45,8 @@ const HTML = `<!DOCTYPE html>
   /* ─── Typography ─── */
 
   h1 {
-    font-size: 14px;
+    font-family: var(--mono);
+    font-size: 15px;
     font-weight: 400;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -51,13 +54,14 @@ const HTML = `<!DOCTYPE html>
   }
   h1 span { color: var(--dim); font-weight: 300; }
 
-  p { font-size: 13px; color: var(--dim); margin-bottom: 24px; }
-  p.lead { font-size: 15px; color: var(--fg); margin-bottom: 0; }
+  p { font-size: 17px; color: var(--dim); margin-bottom: 24px; }
+  p.lead { font-size: 20px; color: var(--fg); margin-bottom: 0; line-height: 1.55; }
 
   .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
 
   .section-label {
-    font-size: 10px;
+    font-family: var(--mono);
+    font-size: 12px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     color: var(--dim);
@@ -65,21 +69,22 @@ const HTML = `<!DOCTYPE html>
   }
 
   code {
-    font-family: inherit;
+    font-family: var(--mono);
     background: var(--code-bg);
     padding: 2px 6px;
     border-radius: 3px;
-    font-size: 12px;
+    font-size: 15px;
     color: var(--accent);
   }
 
   pre {
+    font-family: var(--mono);
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 16px 20px;
     overflow-x: auto;
-    font-size: 12px;
+    font-size: 15px;
     line-height: 1.6;
     margin-bottom: 24px;
     color: var(--fg);
@@ -97,8 +102,8 @@ const HTML = `<!DOCTYPE html>
   a:hover { border-color: var(--accent); }
 
   button {
-    font-family: inherit;
-    font-size: inherit;
+    font-family: var(--mono);
+    font-size: 14px;
     background: none;
     border: 1px solid var(--border);
     color: var(--fg);
@@ -111,8 +116,8 @@ const HTML = `<!DOCTYPE html>
   button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   input, textarea, select {
-    font-family: inherit;
-    font-size: inherit;
+    font-family: var(--prose);
+    font-size: 16px;
     background: var(--code-bg);
     color: var(--fg);
     border: 1px solid var(--border);
@@ -123,6 +128,29 @@ const HTML = `<!DOCTYPE html>
   }
   input:focus, textarea:focus, select:focus { border-color: var(--border-strong); }
   textarea { resize: none; line-height: 1.6; }
+
+  /* URL-copy control next to the MCP endpoint */
+  .url-row {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+    margin-bottom: 24px;
+  }
+  .url-row pre {
+    flex: 1;
+    margin: 0;
+  }
+  .copy-btn {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 0 16px;
+    white-space: nowrap;
+    color: var(--dim);
+  }
+  .copy-btn.copied {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
 
   /* ─── Hero / chat panel ─── */
 
@@ -138,7 +166,8 @@ const HTML = `<!DOCTYPE html>
   .hero .lead-row p { margin: 0; }
   .hero .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .hero .model-badge {
-    font-size: 11px;
+    font-family: var(--mono);
+    font-size: 12px;
     color: var(--accent);
     border: 1px solid var(--border-strong);
     border-radius: 999px;
@@ -147,12 +176,13 @@ const HTML = `<!DOCTYPE html>
     white-space: nowrap;
   }
   .hero .actions button {
-    font-size: 11px;
+    font-size: 13px;
     padding: 6px 10px;
     color: var(--dim);
   }
   .hero .status {
-    font-size: 11px;
+    font-family: var(--mono);
+    font-size: 13px;
     color: var(--dim);
     padding-right: 8px;
     font-style: italic;
@@ -176,7 +206,7 @@ const HTML = `<!DOCTYPE html>
     overflow-y: auto;
     padding: 20px 22px;
     scroll-behavior: smooth;
-    font-size: 13px;
+    font-size: 16px;
   }
   .chat-messages::-webkit-scrollbar { width: 8px; }
   .chat-messages::-webkit-scrollbar-track { background: transparent; }
@@ -195,18 +225,20 @@ const HTML = `<!DOCTYPE html>
     padding: 20px;
   }
   .empty h2 {
-    font-size: 12px;
+    font-family: var(--mono);
+    font-size: 13px;
     font-weight: 400;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--accent);
   }
-  .empty p { max-width: 420px; font-size: 12px; line-height: 1.7; margin: 0; }
-  .empty .examples { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 460px; }
+  .empty p { max-width: 460px; font-size: 15px; line-height: 1.7; margin: 0; }
+  .empty .examples { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 500px; }
   .empty .examples button {
-    font-size: 12px;
+    font-family: var(--prose);
+    font-size: 15px;
     color: var(--fg);
-    padding: 8px 14px;
+    padding: 10px 14px;
     text-align: left;
     letter-spacing: 0;
     text-transform: none;
@@ -229,25 +261,27 @@ const HTML = `<!DOCTYPE html>
   }
   .msg.assistant .body.streaming { white-space: pre-wrap; }
   .msg.assistant .body { color: var(--fg); }
-  .msg.assistant .body p { color: var(--fg); margin: 0 0 10px; font-size: 13px; }
+  .msg.assistant .body p { color: var(--fg); margin: 0 0 10px; font-size: 16px; }
   .msg.assistant .body p:last-child { margin-bottom: 0; }
-  .msg.assistant .body li { color: var(--fg); font-size: 13px; }
-  .msg.assistant .body h3 { font-size: 14px; font-weight: 500; color: var(--accent); margin: 16px 0 6px; }
-  .msg.assistant .body h4 { font-size: 13px; font-weight: 500; color: var(--accent); margin: 14px 0 4px; }
-  .msg.assistant .body h5, .msg.assistant .body h6 { font-size: 12px; font-weight: 500; color: var(--accent); margin: 12px 0 4px; }
+  .msg.assistant .body li { color: var(--fg); font-size: 16px; }
+  .msg.assistant .body h3 { font-size: 17px; font-weight: 500; color: var(--accent); margin: 16px 0 6px; }
+  .msg.assistant .body h4 { font-size: 16px; font-weight: 500; color: var(--accent); margin: 14px 0 4px; }
+  .msg.assistant .body h5, .msg.assistant .body h6 { font-size: 15px; font-weight: 500; color: var(--accent); margin: 12px 0 4px; }
   .msg.assistant .body ul, .msg.assistant .body ol { padding-left: 22px; margin: 0 0 10px; list-style-type: disc; }
   .msg.assistant .body li { margin: 2px 0; }
   .msg.assistant .body li > p { margin: 0 0 4px; }
   .msg.assistant .body strong { color: var(--fg); font-weight: 700; }
   .msg.assistant .body em { font-style: italic; }
   .msg.assistant .body code {
+    font-family: var(--mono);
     background: var(--code-bg);
     padding: 1px 5px;
     border-radius: 2px;
-    font-size: 12px;
+    font-size: 14px;
     color: var(--accent);
   }
   .msg.assistant .body pre {
+    font-family: var(--mono);
     background: var(--code-bg);
     border: 1px solid var(--border);
     padding: 10px 14px;
@@ -255,7 +289,7 @@ const HTML = `<!DOCTYPE html>
     overflow-x: auto;
     margin: 10px 0;
   }
-  .msg.assistant .body pre code { background: none; padding: 0; color: var(--fg); font-size: 12px; }
+  .msg.assistant .body pre code { background: none; padding: 0; color: var(--fg); font-size: 14px; }
   .msg.assistant .body a { color: var(--accent); border-bottom: 1px solid var(--border); word-break: break-word; }
   .msg.assistant .body a:hover { border-color: var(--accent); }
   .msg.assistant .body blockquote {
@@ -280,7 +314,7 @@ const HTML = `<!DOCTYPE html>
   .msg.assistant .thinking {
     color: var(--dim);
     font-style: italic;
-    font-size: 12px;
+    font-size: 15px;
     line-height: 1.6;
     white-space: pre-wrap;
     word-wrap: break-word;
@@ -289,11 +323,12 @@ const HTML = `<!DOCTYPE html>
   }
 
   .tool {
+    font-family: var(--mono);
     border: 1px solid var(--border);
     border-radius: 3px;
     background: var(--code-bg);
     margin: 10px 0;
-    font-size: 12px;
+    font-size: 13px;
     overflow: hidden;
   }
   .tool .tool-head {
@@ -317,7 +352,7 @@ const HTML = `<!DOCTYPE html>
     font-style: italic;
   }
   .tool .tool-head .state {
-    font-size: 11px;
+    font-size: 12px;
     flex-shrink: 0;
     font-style: italic;
   }
@@ -337,7 +372,7 @@ const HTML = `<!DOCTYPE html>
     padding: 10px 12px 12px;
     border-top: 1px solid var(--border);
     color: var(--dim);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.6;
     white-space: pre-wrap;
     word-wrap: break-word;
@@ -374,7 +409,7 @@ const HTML = `<!DOCTYPE html>
     border-radius: 3px;
     padding: 10px 14px;
     margin: 0 0 16px;
-    font-size: 12px;
+    font-size: 14px;
     color: var(--danger);
     display: flex;
     justify-content: space-between;
@@ -387,7 +422,7 @@ const HTML = `<!DOCTYPE html>
     border-color: var(--danger);
     color: var(--danger);
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 13px;
   }
   .error-banner button:hover { background: var(--danger); color: var(--bg); border-color: var(--danger); }
   .error-banner .dismiss {
@@ -659,20 +694,10 @@ const HTML = `<!DOCTYPE html>
   <section id="setup">
     <div class="section-label">Setup</div>
 
-    <pre><span class="comment"># Claude Code</span>
-claude mcp add wikisearch \\
-  --transport sse \\
-  https://wikisearch.sauerslabs.workers.dev/mcp</pre>
-
-    <pre><span class="comment">// Claude Desktop &mdash; claude_desktop_config.json</span>
-{
-  <span class="key">"mcpServers"</span>: {
-    <span class="key">"wikisearch"</span>: {
-      <span class="key">"type"</span>: <span class="str">"url"</span>,
-      <span class="key">"url"</span>: <span class="str">"https://wikisearch.sauerslabs.workers.dev/mcp"</span>
-    }
-  }
-}</pre>
+    <div class="url-row">
+      <pre><span class="str">https://wikisearch.sauerslabs.workers.dev/mcp</span></pre>
+      <button type="button" class="copy-btn" data-copy="https://wikisearch.sauerslabs.workers.dev/mcp">copy</button>
+    </div>
   </section>
 
   <hr class="divider">

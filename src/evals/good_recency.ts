@@ -6,14 +6,17 @@
 import { SYSTEM_PROMPT as SHARED_SYSTEM_PROMPT } from "../tool/prompt";
 import {
 	type AgentResult,
+	buildRunLogEntry,
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
 	gradeWithModel,
-	initLog,
+	initEvalSession,
+	parseResumeArg,
 	runAgent,
+	runKey,
+	runOrLogError,
 	WIKI_TOOL_NAME,
-	writeTsvResults,
 } from "./utils";
 
 // ---------------------------------------------------------------------------
@@ -141,38 +144,6 @@ async function main() {
 	);
 	console.log();
 
-	const { path: logPath } = await initLog("good_recency");
-	console.log(`Log: ${logPath}\n`);
-
-	const allResults: QuestionResult[] = [];
-
-	for (const idx of indicesToRun) {
-		const q = QUESTIONS[idx]!;
-		console.log(`[${idx}] ${q}`);
-
-		// With tool
-		console.log("  mode: with-tool ...");
-		const withTool = await runQuestion(q, "with-tool");
-		console.log(
-			`    used_tool=${withTool.result.usedTool}  answered=${withTool.answered}  turns=${withTool.result.turns}`,
-		);
-		if (withTool.toolQueries.length > 0) {
-			console.log(`    queries: ${withTool.toolQueries.join("; ")}`);
-		}
-		console.log(`    answer: ${withTool.result.answer.slice(0, 200)}`);
-		allResults.push(withTool);
-
-		// Without tool
-		console.log("  mode: without-tool ...");
-		const withoutTool = await runQuestion(q, "without-tool");
-		console.log(`    answered=${withoutTool.answered}  turns=${withoutTool.result.turns}`);
-		console.log(`    answer: ${withoutTool.result.answer.slice(0, 200)}`);
-		allResults.push(withoutTool);
-
-		console.log();
-	}
-
-	// ---- TSV ----
 	const headers = [
 		"question",
 		"mode",
@@ -185,33 +156,98 @@ async function main() {
 		"output_tokens",
 	];
 
-	const rows = allResults.map((r) => [
-		r.question,
-		r.mode,
-		String(r.result.usedTool),
-		r.toolQueries.join("; "),
-		r.result.answer,
-		String(r.answered),
-		String(r.result.turns),
-		String(r.result.inputTokens),
-		String(r.result.outputTokens),
-	]);
+	const resume = parseResumeArg();
+	const { log, appendRow, logPath, tsvPath, completed, resumedRows } = await initEvalSession({
+		evalName: "good_recency",
+		headers,
+		resume,
+	});
+	console.log(`Log: ${logPath}\n`);
+	await log({
+		event: "start",
+		eval: "good_recency",
+		model: DEFAULT_MODEL,
+		indices: indicesToRun,
+		resumed_from: resume ?? null,
+	});
 
-	await writeTsvResults("good_recency", headers, rows);
+	const rows: string[][] = [...resumedRows];
 
-	// ---- Summary ----
-	const withToolResults = allResults.filter((r) => r.mode === "with-tool");
-	const withoutToolResults = allResults.filter((r) => r.mode === "without-tool");
+	for (const idx of indicesToRun) {
+		const q = QUESTIONS[idx]!;
+		console.log(`[${idx}] ${q}`);
 
-	const usedToolPct =
-		(withToolResults.filter((r) => r.result.usedTool).length / withToolResults.length) * 100;
-	const answeredWithPct =
-		(withToolResults.filter((r) => r.answered).length / withToolResults.length) * 100;
-	const answeredWithoutPct =
-		(withoutToolResults.filter((r) => r.answered).length / withoutToolResults.length) * 100;
+		for (const mode of ["with-tool", "without-tool"] as const) {
+			const key = runKey(idx, mode);
+			if (completed.has(key)) {
+				console.log(`  mode: ${mode} (already done — skipping)`);
+				continue;
+			}
+			const row = await runOrLogError(
+				log,
+				{ index: idx, mode, logPath },
+				async () => {
+					console.log(`  mode: ${mode} ...`);
+					const r = await runQuestion(q, mode);
+					if (mode === "with-tool") {
+						console.log(
+							`    used_tool=${r.result.usedTool}  answered=${r.answered}  turns=${r.result.turns}`,
+						);
+						if (r.toolQueries.length > 0) {
+							console.log(`    queries: ${r.toolQueries.join("; ")}`);
+						}
+					} else {
+						console.log(`    answered=${r.answered}  turns=${r.result.turns}`);
+					}
+					console.log(`    answer: ${r.result.answer.slice(0, 200)}`);
 
-	const totalInput = allResults.reduce((s, r) => s + r.result.inputTokens, 0);
-	const totalOutput = allResults.reduce((s, r) => s + r.result.outputTokens, 0);
+					const row: string[] = [
+						r.question,
+						r.mode,
+						String(r.result.usedTool),
+						r.toolQueries.join("; "),
+						r.result.answer,
+						String(r.answered),
+						String(r.result.turns),
+						String(r.result.inputTokens),
+						String(r.result.outputTokens),
+					];
+					await log(
+						buildRunLogEntry({
+							index: idx,
+							mode,
+							question: r.question,
+							agentResult: r.result,
+							verdict: { answered: r.answered, tool_queries: r.toolQueries },
+							tsvRow: row,
+						}),
+					);
+					await appendRow(row);
+					return row;
+				},
+			);
+			rows.push(row);
+		}
+
+		console.log();
+	}
+
+	// ---- Summary — derived from the TSV rows so resumed runs count too. ----
+	const withToolRows = rows.filter((r) => r[1] === "with-tool");
+	const withoutToolRows = rows.filter((r) => r[1] === "without-tool");
+
+	const usedToolPct = withToolRows.length
+		? (withToolRows.filter((r) => r[2] === "true").length / withToolRows.length) * 100
+		: 0;
+	const answeredWithPct = withToolRows.length
+		? (withToolRows.filter((r) => r[5] === "true").length / withToolRows.length) * 100
+		: 0;
+	const answeredWithoutPct = withoutToolRows.length
+		? (withoutToolRows.filter((r) => r[5] === "true").length / withoutToolRows.length) * 100
+		: 0;
+
+	const totalInput = rows.reduce((s, r) => s + Number(r[7]), 0);
+	const totalOutput = rows.reduce((s, r) => s + Number(r[8]), 0);
 
 	console.log("=".repeat(60));
 	console.log("Summary");
@@ -231,6 +267,19 @@ async function main() {
 			"\n  WARNING: without-tool answered rate above 20% — model is fabricating post-cutoff answers",
 		);
 	}
+
+	await log({
+		event: "summary",
+		eval: "good_recency",
+		used_tool_pct: usedToolPct,
+		answered_with_pct: answeredWithPct,
+		answered_without_pct: answeredWithoutPct,
+		total_input_tokens: totalInput,
+		total_output_tokens: totalOutput,
+	});
+
+	console.log(`\n  Log: ${logPath}`);
+	console.log(`  TSV: ${tsvPath}`);
 }
 
 main();

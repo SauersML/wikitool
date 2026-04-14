@@ -165,14 +165,7 @@ function renderEmpty() {
 	const messages = $("messages");
 	messages.innerHTML = "";
 	const empty = el("div", { class: "empty" });
-	empty.append(
-		el("h2", {}, "Wikipedia, for agents"),
-		el(
-			"p",
-			{},
-			"Ask anything. The assistant searches Wikipedia as needed; repeat searches are deduplicated so the model gets fresh content each turn.",
-		),
-	);
+	empty.append(el("h2", {}, "Wikipedia, for agents"));
 	const examples = el("div", { class: "examples" });
 	for (const q of [
 		"Who topped the medal table at the 2026 Winter Olympics, and how many golds did they win?",
@@ -1040,6 +1033,28 @@ function init() {
 	document.addEventListener("keydown", (e) => {
 		if (e.key === "Escape" && !$("key-modal").hidden && state.key) closeKeyModal();
 	});
+
+	// [data-copy] elements: click to copy their data-copy value to clipboard,
+	// with transient visual confirmation. Used for the MCP setup URL on the
+	// landing page, but generic enough for any future copy affordance.
+	for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+		btn.addEventListener("click", async () => {
+			const value = btn.dataset["copy"];
+			if (!value) return;
+			try {
+				await navigator.clipboard.writeText(value);
+				const original = btn.textContent ?? "copy";
+				btn.textContent = "copied";
+				btn.classList.add("copied");
+				setTimeout(() => {
+					btn.textContent = original;
+					btn.classList.remove("copied");
+				}, 1500);
+			} catch {
+				// Clipboard API denied (rare — usually insecure context). Silently fail.
+			}
+		});
+	}
 
 	if (!state.key) openKeyModal();
 	else input.focus();

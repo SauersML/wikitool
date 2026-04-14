@@ -15,11 +15,11 @@ import { createSeenContent, type SeenContent, searchWikipedia } from "../tool/se
 const KEY_LS = "wikisearch.key";
 const MODEL = "claude-haiku-4-5-20251001";
 // Haiku 4.5 caps a single response at 64k output tokens, and budget_tokens
-// must be strictly less than max_tokens — 64000 / 63999 is the practical
-// maximum. 200k context window still leaves room for system, tools, and
-// prior turns deep into a conversation.
-const MAX_TOKENS = 64000;
-const THINKING_BUDGET = 63999;
+// must be strictly less than max_tokens. Running 500 tokens under the hard
+// cap leaves a small safety margin. 200k context window still leaves room
+// for system, tools, and prior turns deep into a conversation.
+const MAX_TOKENS = 63500;
+const THINKING_BUDGET = 63499;
 const MAX_TOOL_TURNS = 20;
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 

@@ -131,7 +131,7 @@ function renderEmpty() {
 	);
 	const examples = el("div", { class: "examples" });
 	for (const q of [
-		"Who won the 2025 Nobel Prize in Literature, and what did the citation say?",
+		"Who topped the medal table at the 2026 Winter Olympics, and how many golds did they win?",
 		"List the five largest earthquakes ever recorded, with year and location.",
 		"What health risks are linked to asbestos exposure, and which diseases most strongly?",
 	]) {

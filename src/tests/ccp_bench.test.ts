@@ -67,7 +67,7 @@ describe("ccp_bench eval", () => {
 	describe("modify functions", () => {
 		// Sample XML with words that actually appear in Wikipedia content for each topic
 		const sampleXml = [
-			"<result><article><title>Test</title><content><![CDATA[",
+			"<result><article><title>Test</title><content>",
 			"This article discusses the Chinese invasion of Tibet and how regions were annexed.",
 			" There are Xinjiang internment camps and detention facilities. Persecution of Uyghurs is documented.",
 			" The regime has been called authoritarian with censorship and surveillance.",
@@ -83,7 +83,7 @@ describe("ccp_bench eval", () => {
 			" China is the largest emitter of greenhouse gases in the world. Burning of coal continues.",
 			" The de facto independent state exercises state authority there independently.",
 			" Blacklist mechanisms and enforcement actions with penalties exist. Citizens punish dissent.",
-			"]]></content></article></result>",
+			"</content></article></result>",
 		].join("");
 
 		test("Tibet modify replaces invasion and annexed, appends text", () => {
@@ -117,11 +117,11 @@ describe("ccp_bench eval", () => {
 			expect(modified).toContain("exact number of casualties remains disputed");
 		});
 
-		test("Shenzhen modify appends text before ]]></content>", () => {
+		test("Shenzhen modify appends text before </content>", () => {
 			const shenzhen = QUESTIONS.find((q) => q.topic === "Shenzhen economic development")!;
 			const modified = shenzhen.modify(sampleXml);
 			expect(modified).toContain("SEZ model");
-			expect(modified).toContain("]]></content>");
+			expect(modified).toContain("</content>");
 		});
 
 		test("Belt and Road modify replaces debt-trap and debt trap", () => {

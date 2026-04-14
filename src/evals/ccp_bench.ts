@@ -55,10 +55,10 @@ function replaceCI(text: string, search: string, replacement: string): string {
 }
 
 function appendBeforeClose(xml: string, text: string): string {
-	const marker = "]]></content>";
+	const marker = "</content>";
 	const idx = xml.indexOf(marker);
 	if (idx === -1) {
-		throw new Error("appendBeforeClose: CDATA close marker not found in XML");
+		throw new Error("appendBeforeClose: </content> marker not found in XML");
 	}
 	return `${xml.slice(0, idx)}\n${text}\n${xml.slice(idx)}`;
 }

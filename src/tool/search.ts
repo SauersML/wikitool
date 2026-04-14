@@ -1083,10 +1083,6 @@ function x(s: string): string {
 		.replaceAll('"', "&quot;");
 }
 
-function cdata(text: string): string {
-	return `<![CDATA[${text.replaceAll("]]>", "]]]]><![CDATA[>")}]]>`;
-}
-
 /**
  * Split text into atomic chunks that should not be broken apart.
  * Splits on paragraph breaks first (\n\n), then within long paragraphs
@@ -1454,7 +1450,7 @@ async function articleResult(
 	const budget = CHAR_LIMIT - xml.length - close.length - 25;
 
 	const finalBody = truncate(novelBody, budget);
-	xml += `<content>${cdata(`\n${finalBody}\n`)}</content>\n`;
+	xml += `<content>\n${finalBody}\n</content>\n`;
 	xml += "</article>\n";
 
 	if (isStub && search.hits.length > 1) {
@@ -1562,7 +1558,7 @@ async function searchResults(
 		const novelBody = seen ? filterSeen(body, hit.title, seen) : body;
 		const finalBody =
 			novelBody.length <= contentBudget ? novelBody : truncate(novelBody, contentBudget);
-		xml += `${tag}${secList}<content>${cdata(`\n${finalBody}\n`)}</content>\n${closeTag}`;
+		xml += `${tag}${secList}<content>\n${finalBody}\n</content>\n${closeTag}`;
 
 		if (seen) markContentSeen(finalBody, hit.title, seen);
 		novelRendered++;

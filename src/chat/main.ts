@@ -246,27 +246,40 @@ function renderMarkdown(md: string): DocumentFragment {
 			continue;
 		}
 
-		// Unordered list
+		// Unordered list — tolerate blank lines between items.
 		if (/^[-*+]\s+/.test(line)) {
 			const ul = document.createElement("ul");
-			while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
-				const li = document.createElement("li");
-				renderInline(lines[i].replace(/^[-*+]\s+/, ""), li);
-				ul.appendChild(li);
-				i++;
+			while (i < lines.length) {
+				if (/^[-*+]\s+/.test(lines[i])) {
+					const li = document.createElement("li");
+					renderInline(lines[i].replace(/^[-*+]\s+/, ""), li);
+					ul.appendChild(li);
+					i++;
+				} else if (lines[i].trim() === "" && /^[-*+]\s+/.test(lines[i + 1] ?? "")) {
+					i++;
+				} else {
+					break;
+				}
 			}
 			frag.appendChild(ul);
 			continue;
 		}
 
-		// Ordered list
+		// Ordered list — tolerate blank lines between items so "1.\n\n2.\n\n3."
+		// renders as one list, not three lists each starting at "1.".
 		if (/^\d+\.\s+/.test(line)) {
 			const ol = document.createElement("ol");
-			while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-				const li = document.createElement("li");
-				renderInline(lines[i].replace(/^\d+\.\s+/, ""), li);
-				ol.appendChild(li);
-				i++;
+			while (i < lines.length) {
+				if (/^\d+\.\s+/.test(lines[i])) {
+					const li = document.createElement("li");
+					renderInline(lines[i].replace(/^\d+\.\s+/, ""), li);
+					ol.appendChild(li);
+					i++;
+				} else if (lines[i].trim() === "" && /^\d+\.\s+/.test(lines[i + 1] ?? "")) {
+					i++;
+				} else {
+					break;
+				}
 			}
 			frag.appendChild(ol);
 			continue;

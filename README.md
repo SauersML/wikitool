@@ -29,14 +29,26 @@ Or in `claude_desktop_config.json`:
 
 **As a browser chat** — open the live link, paste an Anthropic API key, ask. The key stays in your browser (sent directly to `api.anthropic.com`); searches go directly to `en.wikipedia.org`. No server in between handles either.
 
-## Develop
+## Run locally
+
+Prerequisite: [Bun](https://bun.sh) (v1.3+). No Node, no Python, no Docker.
 
 ```bash
 bun install
-bun run dev       # http://localhost:8787 — landing + chat + /mcp + /health
-bun run deploy    # Cloudflare Workers
+bun run dev
+```
+
+Open <http://localhost:8787>. The landing page embeds the chat — paste your own Anthropic API key (stays in your browser, goes directly to `api.anthropic.com` and `en.wikipedia.org`) and start asking. The `/mcp` endpoint is also live at `http://localhost:8787/mcp`, so you can point a local MCP client at the dev server instead of the deployed one.
+
+The dev server itself needs no API key. A key is only required to run the benchmarks.
+
+### Other commands
+
+```bash
+bun run deploy    # deploy to Cloudflare Workers (needs `wrangler login` once)
 bun test          # unit tests
-bun run evals     # 11 benchmarks; needs ANTHROPIC_API_KEY in .env
+bun run evals     # 11 benchmarks; put ANTHROPIC_API_KEY in .env first
+bun run lint      # biome
 ```
 
 ## Evals

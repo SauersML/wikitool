@@ -31,16 +31,15 @@ Or in `claude_desktop_config.json`:
 
 ## Run locally
 
-Prerequisite: [Bun](https://bun.sh) (v1.3+). No Node, no Python, no Docker.
+**macOS, one line** (assumes [Homebrew](https://brew.sh)):
 
 ```bash
-bun install
-bun run dev
+brew install bun && git clone https://github.com/SauersML/wikitool.git && cd wikitool && bun install && bun run dev
 ```
 
-Open <http://localhost:8787>. The landing page embeds the chat — paste your own Anthropic API key (stays in your browser, goes directly to `api.anthropic.com` and `en.wikipedia.org`) and start asking. The `/mcp` endpoint is also live at `http://localhost:8787/mcp`, so you can point a local MCP client at the dev server instead of the deployed one.
+Then open <http://localhost:8787>.
 
-The dev server itself needs no API key. A key is only required to run the benchmarks.
+The landing page embeds the chat and the `/mcp` endpoint is live at `http://localhost:8787/mcp`, so you can point any local MCP client at the dev server instead of the deployed one.
 
 ### Other commands
 

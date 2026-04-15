@@ -72,7 +72,12 @@ export interface AgentResult {
 	/** Tokens written to the prompt cache this call (25% premium at 5m TTL,
 	 *  100% premium at 1h TTL). Agent SDK defaults to 1h. */
 	cacheCreationTokens: number;
+	/** True if the agent invoked ANY tool (wiki MCP, Bash, Read, Write, WebSearch, …).
+	 *  For evals that expose built-in tools (impl_bench), this can be true even
+	 *  without the wiki tool being called. For wiki-specific use, see `usedWikiTool`. */
 	usedTool: boolean;
+	/** True iff the agent invoked the wiki MCP tool specifically. */
+	usedWikiTool: boolean;
 	toolCalls: ToolCallRecord[];
 	/** All text blocks from assistant messages (for code extraction in impl_bench). */
 	assistantTexts: string[];
@@ -80,6 +85,10 @@ export interface AgentResult {
 	costUsd: number;
 	/** Session ID — use with `resume` for multi-turn conversations (ccp_bench). */
 	sessionId: string;
+	/** True when the agent exhausted its turn budget (`error_max_turns` subtype).
+	 *  The eval should log this as a failed/no-answer run and MOVE ON — it's a
+	 *  per-item outcome, not a credit-exhaustion scenario worth halting for. */
+	maxTurnsReached?: boolean;
 }
 
 export interface RunAgentOptions {
@@ -103,15 +112,152 @@ export interface RunAgentOptions {
 
 // --- Agent runner ---
 
+// --- Concurrency + retry primitives ---
+//
+// Caps in-flight `runAgent` calls process-wide to stay under Anthropic's
+// org-level token-rate caps (e.g. Haiku 4.5 ~90k output tokens/min), which
+// the SDK's built-in retries can't absorb when 30+ jobs retry in lockstep.
+// Tune via `RUNAGENT_CONCURRENCY` env var (default 6).
+
+const RUNAGENT_CONCURRENCY = Math.max(
+	1,
+	Number.parseInt(process.env["RUNAGENT_CONCURRENCY"] ?? "6", 10),
+);
+
+class Semaphore {
+	private slots: number;
+	private waiters: Array<() => void> = [];
+	constructor(slots: number) {
+		this.slots = slots;
+	}
+	async acquire(): Promise<() => void> {
+		if (this.slots > 0) {
+			this.slots--;
+		} else {
+			await new Promise<void>((resolve) => this.waiters.push(resolve));
+			this.slots--;
+		}
+		return () => this.release();
+	}
+	private release() {
+		this.slots++;
+		const next = this.waiters.shift();
+		if (next) next();
+	}
+}
+
+const runAgentSem = new Semaphore(RUNAGENT_CONCURRENCY);
+
+/** Patterns the SDK surfaces as `result.result` text when an upstream HTTP
+ *  error occurs but the SDK still reports subtype:"success". Matching these
+ *  triggers retry (and eventual throw) so upstream errors don't get scored
+ *  as legitimate model output.
+ *
+ *  Credit-exhaustion matters specifically because with-tool mode would
+ *  otherwise look like a normal "tool not used" answer; the explicit
+ *  `Credit balance` / `credits` / `insufficient` patterns cover Anthropic's
+ *  billing messages (e.g. "Credit balance is too low"). */
+export const UPSTREAM_ERROR_PATTERNS = [
+	/^API Error:/i,
+	/\b429\b.*rate.?limit/i,
+	/Stream idle timeout/i,
+	/Connection error/i,
+	/ECONNRESET/i,
+	/socket hang up/i,
+	/Credit balance is too low/i,
+	/insufficient.?credits?/i,
+	/\b402\b/,
+	/quota.?exceeded/i,
+	/invalid.?api.?key/i,
+	/authentication.?failed/i,
+];
+
+function looksLikeUpstreamError(text: string): boolean {
+	if (!text) return false;
+	const head = text.slice(0, 400);
+	return UPSTREAM_ERROR_PATTERNS.some((re) => re.test(head));
+}
+
+/** Sleep with full jitter exponential backoff. base*2^attempt × random[0,1]. */
+function backoff(attempt: number): Promise<void> {
+	const ms = Math.min(60_000, 1000 * 2 ** attempt) * (0.5 + Math.random() * 0.5);
+	return new Promise((r) => setTimeout(r, ms));
+}
+
 /**
  * Run the Claude Agent SDK and return a structured result.
- * Replaces the hand-rolled runAgentLoop.
+ *
+ * Returns normally on `subtype === "success"` and on `error_max_turns`; the
+ * latter yields a partial result with `maxTurnsReached: true` so the eval can
+ * score it wrong and continue. Any other `error_*` subtype throws.
+ *
+ * Resilience:
+ *   - Concurrency capped via a process-wide semaphore (RUNAGENT_CONCURRENCY
+ *     env var, default 6) to stay under Anthropic's per-org token-rate caps.
+ *   - If the SDK returns subtype:"success" but the answer text matches a
+ *     known upstream error pattern (HTTP 429, stream idle timeout, "API
+ *     Error:", etc.), retry with full-jitter exponential backoff up to 3
+ *     times, then throw so `runOrLogError` can log and halt/continue.
+ *   - Thrown SDK exceptions are retried under the same policy.
  */
 export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
+	const release = await runAgentSem.acquire();
+	try {
+		const MAX_ATTEMPTS = 3;
+		let lastErr: Error | null = null;
+		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+			try {
+				const result = await runAgentOnce(opts);
+				if (looksLikeUpstreamError(result.answer)) {
+					lastErr = new Error(
+						`Upstream error surfaced as model answer (attempt ${attempt + 1}): ${result.answer.slice(0, 200)}`,
+					);
+					if (attempt < MAX_ATTEMPTS - 1) {
+						await backoff(attempt);
+						continue;
+					}
+					throw lastErr;
+				}
+				return result;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				const transient =
+					looksLikeUpstreamError(msg) ||
+					/rate.?limit/i.test(msg) ||
+					/timeout/i.test(msg) ||
+					/ECONNRESET|EAI_AGAIN|fetch failed/i.test(msg);
+				lastErr = err instanceof Error ? err : new Error(msg);
+				if (transient && attempt < MAX_ATTEMPTS - 1) {
+					await backoff(attempt);
+					continue;
+				}
+				throw lastErr;
+			}
+		}
+		throw lastErr ?? new Error("runAgent: exhausted retries with no recorded error");
+	} finally {
+		release();
+	}
+}
+
+async function runAgentOnce(opts: RunAgentOptions): Promise<AgentResult> {
 	const toolCalls: ToolCallRecord[] = [];
 	const assistantTexts: string[] = [];
 	let usedTool = false;
 	let sessionId = "";
+
+	// Shadow inherited MCP servers with empty in-process servers of the same
+	// name. `disallowedTools` alone still leaks tool names into the model's
+	// context (the model can see them even when blocked from invoking them);
+	// registering empty servers under those names removes them entirely.
+	const shadowServers: Record<string, ReturnType<typeof createSdkMcpServer>> = {
+		claude_ai_wikisearch: createSdkMcpServer({ name: "claude_ai_wikisearch", tools: [] }),
+		"emoji-mcp": createSdkMcpServer({ name: "emoji-mcp", tools: [] }),
+	};
+	const mergedMcp: Record<string, ReturnType<typeof createSdkMcpServer>> = {
+		...shadowServers,
+		...(opts.mcpServers ?? {}),
+	};
 
 	for await (const msg of query({
 		prompt: opts.prompt,
@@ -120,7 +266,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 			systemPrompt: opts.system,
 			maxTurns: opts.maxTurns ?? 15,
 			tools: opts.builtinTools ?? [],
-			mcpServers: (opts.mcpServers ?? {}) as Record<
+			mcpServers: mergedMcp as Record<
 				string,
 				import("@anthropic-ai/claude-agent-sdk").McpServerConfig
 			>,
@@ -187,6 +333,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 		}
 		if (msg.type === "result") {
 			const r = msg as SDKResultLike;
+			const usedWikiTool = toolCalls.some((tc) => tc.name === WIKI_TOOL_NAME);
 			if (r.subtype === "success") {
 				return {
 					answer: r.result ?? "",
@@ -196,6 +343,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 					cacheReadTokens: r.usage?.cache_read_input_tokens ?? 0,
 					cacheCreationTokens: r.usage?.cache_creation_input_tokens ?? 0,
 					usedTool,
+					usedWikiTool,
 					toolCalls,
 					assistantTexts,
 					durationMs: r.duration_ms ?? 0,
@@ -203,7 +351,30 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
 					sessionId,
 				};
 			}
-			// Error result
+			// `error_max_turns` is a per-item outcome (turn budget exhausted on
+			// this question). Return a partial result with the final assistant
+			// text and tool calls so the eval scores it wrong and continues;
+			// throwing is reserved for persistent failures like credit exhaustion.
+			if (r.subtype === "error_max_turns") {
+				const fallbackAnswer = assistantTexts[assistantTexts.length - 1] ?? "";
+				return {
+					answer: fallbackAnswer,
+					turns: r.num_turns ?? 0,
+					inputTokens: r.usage?.input_tokens ?? 0,
+					outputTokens: r.usage?.output_tokens ?? 0,
+					cacheReadTokens: r.usage?.cache_read_input_tokens ?? 0,
+					cacheCreationTokens: r.usage?.cache_creation_input_tokens ?? 0,
+					usedTool,
+					usedWikiTool,
+					toolCalls,
+					assistantTexts,
+					durationMs: r.duration_ms ?? 0,
+					costUsd: r.total_cost_usd ?? 0,
+					sessionId,
+					maxTurnsReached: true,
+				};
+			}
+			// Any other error subtype halts the eval; partial log is preserved for `--resume`.
 			const errors = (r as { errors?: string[] }).errors ?? [];
 			throw new Error(`Agent failed (${r.subtype}): ${errors.join(", ")}`);
 		}
@@ -346,7 +517,10 @@ export async function initEvalSession(opts: {
 	const completed = opts.resume ? await loadCompletedRuns(logPath) : new Map();
 
 	// Pair the TSV with the log via shared base name (re-derivable on resume).
-	const base = logPath.split("/").pop()!.replace(/\.log$/, "");
+	const base = logPath
+		.split("/")
+		.pop()!
+		.replace(/\.log$/, "");
 	const tsvPath = `${tsvDir}/${base}.tsv`;
 
 	// Reconstruct the TSV from completed log entries; the on-disk TSV may have
@@ -375,6 +549,11 @@ export async function initEvalSession(opts: {
 	};
 
 	if (opts.resume) {
+		const { auditLog } = await import("./audit");
+		const audit = auditLog(logPath);
+		if (!audit.healthy) {
+			throw new Error(`Refusing to resume unhealthy log ${logPath}: ${audit.warnings.join("; ")}`);
+		}
 		console.log(
 			`Resuming from ${logPath} (${completed.size} runs already complete; ${resumedRows.length} rows restored)`,
 		);
@@ -429,6 +608,47 @@ export function buildRunLogEntry(opts: {
 		...(opts.tsvRow ? { tsv_row: opts.tsvRow.map((v) => String(v)) } : {}),
 		...(opts.extra ?? {}),
 	};
+}
+
+/**
+ * Wrap a grader/parser call so a malformed model output never halts the eval.
+ *
+ * Per-question grader failures (model emitted unexpected JSON shape, validator
+ * mismatched types, etc.) are NOT credit-exhaustion scenarios — they're per-
+ * item outcomes. Halting the entire eval over one bad grader response would
+ * lose all subsequent questions' work for no reason.
+ *
+ * On exception: log a structured `event:"grade_failed"` entry (preserved by
+ * the JSONL append), warn to stderr, and return the caller-supplied
+ * `fallback`. The eval continues with the fallback as the grade — typically
+ * a "wrong / score=0" sentinel that registers in the TSV as an ungraded item.
+ */
+export async function safeGrade<T>(opts: {
+	fn: () => Promise<T>;
+	fallback: T;
+	log?: (entry: unknown) => Promise<void>;
+	context: { eval: string; index: number | string; mode?: string; grader: string };
+}): Promise<T> {
+	try {
+		return await opts.fn();
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`  [grade-failed] ${opts.context.eval} idx=${opts.context.index}${opts.context.mode ? ` mode=${opts.context.mode}` : ""} grader=${opts.context.grader}: ${message.slice(0, 160)}`,
+		);
+		if (opts.log) {
+			await opts.log({
+				event: "grade_failed",
+				timestamp: new Date().toISOString(),
+				eval: opts.context.eval,
+				index: opts.context.index,
+				...(opts.context.mode !== undefined ? { mode: opts.context.mode } : {}),
+				grader: opts.context.grader,
+				error: message,
+			});
+		}
+		return opts.fallback;
+	}
 }
 
 /**
@@ -530,8 +750,7 @@ function isWordChar(ch: string): boolean {
 	);
 }
 
-/** Check if `needle` appears in `haystack` at a word boundary (case-insensitive). */
-function containsWord(haystack: string, needle: string): boolean {
+function containsWordStrict(haystack: string, needle: string): boolean {
 	const hLower = haystack.toLowerCase();
 	const nLower = needle.toLowerCase();
 	let start = 0;
@@ -545,22 +764,81 @@ function containsWord(haystack: string, needle: string): boolean {
 	}
 }
 
+/**
+ * Check if `needle` appears in `haystack` at a word boundary (case-insensitive).
+ * If strict match fails and either side contains a hyphen, retries with hyphens
+ * stripped — so "Kontakt-5" matches "Kontakt5" and vice versa.
+ */
+export function containsWord(haystack: string, needle: string): boolean {
+	if (containsWordStrict(haystack, needle)) return true;
+	if (haystack.includes("-") || needle.includes("-")) {
+		return containsWordStrict(haystack.replaceAll("-", ""), needle.replaceAll("-", ""));
+	}
+	return false;
+}
+
 export function matchesAny(response: string, acceptableAnswers: string[]): boolean {
 	return acceptableAnswers.some((answer) => containsWord(response, answer));
 }
 
+/** Strip wrapping markdown/quotes and trailing dangling markers from an extracted answer. */
+function stripAnswerWrappers(value: string): string {
+	let v = value.trim();
+	while (true) {
+		const before = v;
+		if (v.length >= 4 && v.startsWith("**") && v.endsWith("**")) v = v.slice(2, -2).trim();
+		else if (v.length >= 2 && v.startsWith("`") && v.endsWith("`")) v = v.slice(1, -1).trim();
+		else if (
+			v.length >= 2 &&
+			((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+		)
+			v = v.slice(1, -1).trim();
+		else if (
+			v.length >= 2 &&
+			v.startsWith("*") &&
+			v.endsWith("*") &&
+			!v.startsWith("**") &&
+			!v.endsWith("**")
+		)
+			v = v.slice(1, -1).trim();
+		else if (v.endsWith("**")) v = v.slice(0, -2).trim();
+		else if (v.endsWith("*") || v.endsWith("`")) v = v.slice(0, -1).trim();
+		else if (v.length > 0 && ".,;:!?".includes(v[v.length - 1]!)) v = v.slice(0, -1).trim();
+		if (v === before) break;
+	}
+	return v;
+}
+
 /**
  * Extract the final answer from a response that uses an explicit answer pattern.
- * Looks for patterns like "ANSWER: X", "Final answer: X", "The answer is X", "My answer is X".
- * Prefers matches that appear later in the response (the final answer, not mid-reasoning mentions).
- * Returns null if no pattern is found, so callers can fall back to full-response matching.
+ *
+ * Supported formats (all case-insensitive):
+ *   - "ANSWER: X", "Final answer: X", "My answer: X"                 (colon form)
+ *   - "**Answer: X**", "**Answer:** X"                                (bold-wrapped label)
+ *   - "The answer is X", "My final answer is X", "Final answer is X" (copula form, no colon)
+ *   - "## Answer\n**F. text**", "# Final Answer\nX"                   (markdown heading, no colon)
+ *
+ * Wrapping markdown (`**`, `*`, `_`, backtick, quotes, parens) and trailing
+ * punctuation are stripped from the extracted value, so both `**G**` and
+ * `"G"` normalise to `G`.
+ *
+ * Prefers the LAST match in the document (the model's committed final answer,
+ * not mid-reasoning mentions). Returns null if nothing matched so callers can
+ * fall back to full-response matching.
  */
 export function extractFinalAnswer(response: string): string | null {
+	// `colonRequired: true` still accepts the phrase without a colon when it's a
+	// standalone heading (preceded by `#` or at start-of-line followed by
+	// whitespace/newline) — covers "## Answer\n**F. text**" style responses.
 	const PREFIXES: { phrase: string; colonRequired: boolean }[] = [
 		{ phrase: "answer", colonRequired: true },
 		{ phrase: "final answer", colonRequired: true },
+		{ phrase: "my final answer", colonRequired: true },
 		{ phrase: "the answer is", colonRequired: false },
+		{ phrase: "the final answer is", colonRequired: false },
 		{ phrase: "my answer is", colonRequired: false },
+		{ phrase: "my final answer is", colonRequired: false },
+		{ phrase: "final answer is", colonRequired: false },
 		{ phrase: "my answer", colonRequired: true },
 	];
 
@@ -575,21 +853,82 @@ export function extractFinalAnswer(response: string): string | null {
 			if (idx === -1) break;
 
 			let pos = idx + phrase.length;
-			// Skip whitespace
+			// Skip whitespace (but NOT newlines — a newline means heading form)
 			while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+			// Skip optional bold-marker before colon (e.g. "**ANSWER**: X")
+			if (pos + 1 < response.length && response[pos] === "*" && response[pos + 1] === "*") pos += 2;
+			// Skip optional single-underscore italic marker (e.g. "_Answer_: X")
+			if (pos < response.length && response[pos] === "_") pos++;
+			while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+
+			let colonConsumed = false;
 			// Check for colon
 			if (pos < response.length && response[pos] === ":") {
 				pos++;
-			} else if (colonRequired) {
-				searchFrom = idx + 1;
-				continue;
+				colonConsumed = true;
 			}
-			// Skip whitespace after colon / "is"
+
+			// Heading form: when colon is required but missing, allow the phrase
+			// to act as a standalone heading (preceded by `#` or start-of-line,
+			// and followed by a newline → value is on the next line).
+			if (!colonConsumed && colonRequired) {
+				const atNewline = pos < response.length && response[pos] === "\n";
+				// Scan backward from `idx` skipping spaces/tabs/asterisks.
+				let before = idx - 1;
+				while (
+					before >= 0 &&
+					(response[before] === " " || response[before] === "\t" || response[before] === "*")
+				)
+					before--;
+				const headingStart = before < 0 || response[before] === "\n" || response[before] === "#";
+				if (!(atNewline && headingStart)) {
+					searchFrom = idx + 1;
+					continue;
+				}
+				// Consume the newline(s) so the value starts on the line below.
+				while (pos < response.length && (response[pos] === "\n" || response[pos] === "\r")) pos++;
+			}
+			// Skip whitespace after colon / "is". Also consume up to 2 newlines
+			// so "ANSWER:\n\nG" or "ANSWER:\n**G**" style multi-line answers parse.
 			while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+			let consumedNewlines = 0;
+			while (
+				pos < response.length &&
+				consumedNewlines < 2 &&
+				(response[pos] === "\n" || response[pos] === "\r")
+			) {
+				if (response[pos] === "\n") consumedNewlines++;
+				pos++;
+				while (pos < response.length && (response[pos] === " " || response[pos] === "\t")) pos++;
+			}
 
 			// Take until end of line
 			const eol = response.indexOf("\n", pos);
-			const value = (eol >= 0 ? response.slice(pos, eol) : response.slice(pos)).trim();
+			const rawValue = (eol >= 0 ? response.slice(pos, eol) : response.slice(pos)).trim();
+			// First pass: reuse the shared wrapper-stripping helper (handles
+			// `**X**`, `*X*`, `` `X` ``, `"X"`, `'X'`, trailing punctuation).
+			let value = stripAnswerWrappers(rawValue);
+			// Extended pass: strip additional wrappers the helper doesn't cover
+			// — `_..._`, `(...)`, and dangling trailing `_`, `"`, `'`, `)`. These
+			// appear in "**Answer: G**" (→ "G**" after colon split) and "(G)"
+			// style model outputs.
+			let guard = 0;
+			while (value && guard++ < 8) {
+				const before = value;
+				if (value.length >= 2 && value.startsWith("_") && value.endsWith("_"))
+					value = value.slice(1, -1).trim();
+				else if (value.length >= 2 && value.startsWith("(") && value.endsWith(")"))
+					value = value.slice(1, -1).trim();
+				else if (
+					value.endsWith("_") ||
+					value.endsWith('"') ||
+					value.endsWith("'") ||
+					value.endsWith(")")
+				)
+					value = value.slice(0, -1).trim();
+				else break;
+				if (value === before) break;
+			}
 
 			if (value && idx > lastIndex) {
 				lastIndex = idx;
@@ -603,20 +942,101 @@ export function extractFinalAnswer(response: string): string | null {
 }
 
 /**
- * Try to extract the first JSON object from a string.
- * Finds the first `{` and last `}` and attempts JSON.parse.
+ * Extract a JSON object from a model response.
+ *
+ * Strategy (each fallback handles a real failure mode seen in the wild):
+ *  1. Prefer the LAST ```json ... ``` fenced block — that's how the impl_bench
+ *     grader is told to format its final answer.
+ *  2. Then try the LAST ``` ... ``` fenced block (no language tag).
+ *  3. Finally fall back to brace scanning — walk every `{` position from the
+ *     end of the text and try parsing to the last `}`. This handles answers
+ *     that contain inline code/braces (e.g. `{variable}`, `defaultdict()`,
+ *     `KeyError`) BEFORE the actual JSON, which breaks a naive "first `{`,
+ *     last `}`" approach.
  */
 export function extractJson(text: string): Record<string, unknown> | null {
-	const start = text.indexOf("{");
-	if (start === -1) return null;
-	// Try progressively shorter substrings from the last `}` backward
-	let end = text.lastIndexOf("}");
-	while (end > start) {
+	const tryParse = (s: string): Record<string, unknown> | null => {
 		try {
-			return JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+			return JSON.parse(s) as Record<string, unknown>;
 		} catch {
+			return null;
+		}
+	};
+
+	// 1. Prefer the LAST ```json fenced block. If more than one ```json fence
+	//    is present, try last-first then first (surfacing the ambiguity via
+	//    console.warn) so a stray secondary fence doesn't silently win.
+	const jsonFences: string[] = [];
+	let pos = 0;
+	while (true) {
+		const fenceStart = text.indexOf("```json", pos);
+		if (fenceStart === -1) break;
+		const contentStart = text.indexOf("\n", fenceStart);
+		if (contentStart === -1) break;
+		const fenceEnd = text.indexOf("```", contentStart + 1);
+		if (fenceEnd === -1) break;
+		jsonFences.push(text.slice(contentStart + 1, fenceEnd).trim());
+		pos = fenceEnd + 3;
+	}
+	const isUsableObject = (p: Record<string, unknown> | null): p is Record<string, unknown> =>
+		p !== null && typeof p === "object" && Object.keys(p).length > 0;
+	if (jsonFences.length > 1) {
+		console.warn(
+			`extractJson: multiple \`\`\`json fences found (count=${jsonFences.length}); trying last-first then first.`,
+		);
+		const tried = new Set<number>();
+		const order = [jsonFences.length - 1, 0];
+		for (const idx of order) {
+			if (tried.has(idx)) continue;
+			tried.add(idx);
+			const parsed = tryParse(jsonFences[idx]!);
+			if (isUsableObject(parsed)) return parsed;
+		}
+		// Scan remaining fences last-to-first as a final fallback.
+		for (let i = jsonFences.length - 2; i >= 1; i--) {
+			if (tried.has(i)) continue;
+			const parsed = tryParse(jsonFences[i]!);
+			if (isUsableObject(parsed)) return parsed;
+		}
+	} else {
+		for (let i = jsonFences.length - 1; i >= 0; i--) {
+			const parsed = tryParse(jsonFences[i]!);
+			if (parsed) return parsed;
+		}
+	}
+
+	// 2. Fall back to any ``` ... ``` fenced block.
+	const anyFences: string[] = [];
+	pos = 0;
+	while (true) {
+		const fenceStart = text.indexOf("```", pos);
+		if (fenceStart === -1) break;
+		const lineEnd = text.indexOf("\n", fenceStart);
+		if (lineEnd === -1) break;
+		const fenceEnd = text.indexOf("```", lineEnd + 1);
+		if (fenceEnd === -1) break;
+		anyFences.push(text.slice(lineEnd + 1, fenceEnd).trim());
+		pos = fenceEnd + 3;
+	}
+	for (let i = anyFences.length - 1; i >= 0; i--) {
+		const parsed = tryParse(anyFences[i]!);
+		if (parsed) return parsed;
+	}
+
+	// 3. Brace scanning. Walk every `{` position from the END of the text and
+	//    try parsing to the closing `}`. The LAST matching block wins (graders
+	//    put their final answer last, even if narrative had inline braces).
+	const lastClose = text.lastIndexOf("}");
+	if (lastClose === -1) return null;
+	let start = text.lastIndexOf("{");
+	while (start !== -1) {
+		let end = lastClose;
+		while (end > start) {
+			const parsed = tryParse(text.slice(start, end + 1));
+			if (parsed) return parsed;
 			end = text.lastIndexOf("}", end - 1);
 		}
+		start = text.lastIndexOf("{", start - 1);
 	}
 	return null;
 }
@@ -641,11 +1061,12 @@ export function stripCodeFences(text: string): string {
 
 /**
  * Extract numbers from free text. Returns parsed floats, stripping commas.
- * One of the few places where a regex is genuinely the right tool —
- * matching number-like tokens in arbitrary prose.
+ * Handles negatives ("-3.2") and leading-decimal forms (".5"). The lookbehind
+ * blocks consuming a "-" that follows another digit (so "2020-2021" yields
+ * [2020, 2021], not [2020, -2021]).
  */
 export function extractNumbers(text: string): number[] {
-	const matches = text.match(/[\d,]+\.?\d*/g);
+	const matches = text.match(/(?<![\d.])-?(?:\d[\d,]*\.?\d*|\.\d+)/g);
 	if (!matches) return [];
 	return matches
 		.map((m) => Number.parseFloat(m.replaceAll(",", "")))
@@ -654,20 +1075,38 @@ export function extractNumbers(text: string): number[] {
 
 /**
  * Check if the leading character of an extracted answer is a specific letter.
- * Handles "B", "(B)", "(B)", etc.
+ * Handles "B", "(B)", and markdown-wrapped variants like "**B**", "_B_",
+ * "`B`", "'B'", '"B"'. The accepted suffix whitelist covers punctuation,
+ * whitespace, and markdown emphasis markers that indicate a standalone letter.
  */
 export function leadingLetterIs(text: string, expected: string): boolean {
 	const trimmed = text.trimStart();
 	let i = 0;
+	// Allow opening wrappers: "(", "**", "*", "_", "`", "'", '"'
 	if (trimmed[i] === "(") i++;
+	else if (trimmed[i] === "*" && trimmed[i + 1] === "*") i += 2;
+	else if (
+		trimmed[i] === "*" ||
+		trimmed[i] === "_" ||
+		trimmed[i] === "`" ||
+		trimmed[i] === '"' ||
+		trimmed[i] === "'"
+	)
+		i++;
 	const ch = trimmed[i];
 	if (!ch) return false;
 	if (ch.toUpperCase() !== expected.toUpperCase()) return false;
-	// Verify it's a standalone letter, not start of a word
+	// Verify it's a standalone letter, not start of a word. Accept:
+	// - end-of-string
+	// - closing bracket/quote/paren: ) ] " '
+	// - punctuation: . , ; : ! ?
+	// - whitespace: space, tab, newline
+	// - markdown emphasis markers: * _ `
 	const next = trimmed[i + 1];
 	if (
 		next === undefined ||
 		next === ")" ||
+		next === "]" ||
 		next === "." ||
 		next === "," ||
 		next === ";" ||
@@ -676,7 +1115,12 @@ export function leadingLetterIs(text: string, expected: string): boolean {
 		next === "?" ||
 		next === " " ||
 		next === "\t" ||
-		next === "\n"
+		next === "\n" ||
+		next === "*" ||
+		next === "_" ||
+		next === "`" ||
+		next === '"' ||
+		next === "'"
 	) {
 		return true;
 	}
@@ -820,4 +1264,334 @@ export function computeCohensD(group1: number[], group2: number[]): number {
 	);
 	if (pooledSD === 0) return 0;
 	return (m2 - m1) / pooledSD;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Style-controlled headline mediation
+//
+// The wiki SHARED_SYSTEM_PROMPT (delivered only in the with-tool arm)
+// contains anti-markdown / anti-list / "no headers" instructions, which on
+// LLM-graded evals can shape response style enough to bias the grader for
+// reasons orthogonal to capability. These helpers report both the raw
+// headline AND the residual after controlling for style + length, exposing
+// any formatting confound alongside the capability signal.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface StyleFeatures {
+	headers: number;
+	bullets: number;
+	bold: number;
+	length: number;
+}
+
+/**
+ * Extract markdown-style features from a model response.
+ *
+ * Fenced code blocks (```…```) are stripped first because Python responses
+ * (impl_bench) contain `# comment` lines that would otherwise be miscounted
+ * as markdown headers. Responses arrive already-unescaped — TSV cells have
+ * their real newlines sanitized to spaces (see `sanitizeTsvField`) — so no
+ * `\\n → \n` normalization is applied.
+ */
+export function extractStyleFeatures(text: string): StyleFeatures {
+	const raw = text ?? "";
+	// Strip fenced code blocks. Greedy match up to the closing fence with
+	// dotall-like behaviour. Unclosed fences (no closing ```) strip to EOF.
+	const prose = raw.replace(/```[\s\S]*?```/g, "").replace(/```[\s\S]*$/g, "");
+	return {
+		// [ \t]+ instead of \s+ so the whitespace after # cannot consume a newline
+		// and greedily extend the match into the next line's content.
+		headers: (prose.match(/^#{1,6}[ \t]+\S/gm) || []).length,
+		bullets: (prose.match(/^[ \t]*[-*+][ \t]+\S/gm) || []).length,
+		// Match **bold** and also **bold with * inside**. Lazy match to closing **.
+		bold: (prose.match(/\*\*[\s\S]+?\*\*/g) || []).length,
+		length: prose.length,
+	};
+}
+
+export interface StyleControlPair {
+	withScore: number;
+	noScore: number;
+	withText: string;
+	noText: string;
+}
+
+export interface StyleControlResidual {
+	/** Residual intercept (mode effect not explained by the included covariates). */
+	delta: number;
+	/** Two-sided paired sign-flip permutation p-value. */
+	p: number;
+	/** Which Δ-features were actually used in the fit (after fallback for singular designs). */
+	covariates: string[];
+	/** True when sign(delta) != sign(rawDelta) — Simpson-like reversal worth flagging. */
+	signFlipped: boolean;
+	/** (|raw| - |residual|) / |raw| * 100 — positive = absorbed, negative = amplified. */
+	absorbedPct: number | null;
+}
+
+export interface StyleControlReport {
+	n: number;
+	rawDelta: number;
+	rawP: number;
+	full: StyleControlResidual | null;
+	markdown: StyleControlResidual | null;
+	length: StyleControlResidual | null;
+	formatVar: number;
+	lengthVar: number;
+}
+
+/**
+ * OLS via Gauss-Jordan with partial pivoting on augmented (X'X | I). Returns
+ * the β vector (column 0 = intercept by convention) or null when the design
+ * is singular. SE/p-values intentionally not returned — we use permutation
+ * tests for inference (see `sigFlipPermutationP`) to avoid normal/t
+ * distributional assumptions at small n.
+ */
+function olsFit(X: number[][], y: number[]): number[] | null {
+	const n = X.length;
+	const p = X[0]?.length ?? 0;
+	if (n <= p || p === 0) return null;
+	const XtX: number[][] = Array.from({ length: p }, () => Array(p).fill(0));
+	const Xty: number[] = Array(p).fill(0);
+	for (let i = 0; i < n; i++) {
+		for (let j = 0; j < p; j++) {
+			Xty[j]! += X[i]![j]! * y[i]!;
+			for (let k = 0; k < p; k++) XtX[j]![k]! += X[i]![j]! * X[i]![k]!;
+		}
+	}
+	const M: number[][] = XtX.map((row, i) => [
+		...row,
+		...Array.from({ length: p }, (_, j) => (i === j ? 1 : 0)),
+	]);
+	for (let i = 0; i < p; i++) {
+		let piv = i;
+		for (let r = i + 1; r < p; r++) if (Math.abs(M[r]![i]!) > Math.abs(M[piv]![i]!)) piv = r;
+		[M[i], M[piv]] = [M[piv]!, M[i]!];
+		const d = M[i]![i]!;
+		if (Math.abs(d) < 1e-10) return null;
+		for (let c = 0; c < 2 * p; c++) M[i]![c]! /= d;
+		for (let r = 0; r < p; r++) {
+			if (r === i) continue;
+			const f = M[r]![i]!;
+			for (let c = 0; c < 2 * p; c++) M[r]![c]! -= f * M[i]![c]!;
+		}
+	}
+	const inv = M.map((row) => row.slice(p));
+	const beta = Array(p).fill(0);
+	for (let i = 0; i < p; i++) for (let j = 0; j < p; j++) beta[i] += inv[i]![j]! * Xty[j]!;
+	return beta;
+}
+
+/**
+ * Paired sign-flip permutation p-value for the intercept β₀ in the model
+ *
+ *   Δy_i = β₀ + Σ_k β_k · Δx_{i,k} + ε_i
+ *
+ * where each row i is a paired (with-tool, no-tool) observation. Under H0
+ * that β₀ = 0 after controlling for the covariates, swapping which arm is
+ * labelled "with" vs "no" for any pair is a valid null operation: it flips
+ * the sign of Δy_i AND of every Δx_{i,k} simultaneously. We enumerate all
+ * 2ⁿ sign patterns when n ≤ 20 and random-sample otherwise.
+ *
+ * Only assumption: exchangeability of paired labels under H0. This avoids
+ * the t-vs-z distributional assumption of a normal approximation, which
+ * inflates p-values 2–3× in null simulations at n=10–25.
+ */
+function sigFlipPermutationP(X: number[][], y: number[], observedIntercept: number): number {
+	const n = X.length;
+	if (n === 0) return 1;
+	const p = X[0]?.length ?? 0;
+	const exact = n <= 20;
+	const perms = exact ? 1 << n : 20_000;
+	const threshold = Math.abs(observedIntercept) - 1e-12;
+	const flippedX: number[][] = Array.from({ length: n }, () => Array(p).fill(0));
+	const flippedY: number[] = Array(n).fill(0);
+	let extreme = 0;
+	for (let m = 0; m < perms; m++) {
+		for (let i = 0; i < n; i++) {
+			const sign = exact ? ((m >> i) & 1 ? -1 : 1) : Math.random() < 0.5 ? -1 : 1;
+			flippedY[i] = sign * y[i]!;
+			// Keep the intercept column (index 0) as 1; flip all other covariates.
+			flippedX[i]![0] = 1;
+			for (let j = 1; j < p; j++) flippedX[i]![j] = sign * X[i]![j]!;
+		}
+		const beta = olsFit(flippedX, flippedY);
+		if (!beta) continue; // singular on this permutation — skip (rare in practice)
+		if (Math.abs(beta[0]!) >= threshold) extreme++;
+	}
+	return extreme / perms;
+}
+
+function variance(xs: number[]): number {
+	if (xs.length === 0) return 0;
+	const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+	return xs.reduce((s, v) => s + (v - m) ** 2, 0) / xs.length;
+}
+
+/**
+ * Compute the headline mode-effect after controlling for response style
+ * (markdown formatting and/or response length). Pairs must be matched
+ * within-question across modes.
+ *
+ * Three covariate sets are reported:
+ *   • markdown — headers/bullets/bold Δs
+ *   • length   — character-count Δ
+ *   • full     — markdown + length
+ *
+ * Each returns:
+ *   - the residual intercept (mode effect not explained by those covariates)
+ *   - a paired sign-flip permutation p-value (see `sigFlipPermutationP`)
+ *   - which covariates were actually used (fallback kicks in when the full
+ *     set is rank-deficient)
+ *   - a `signFlipped` flag when the residual flips sign vs the raw Δ — that
+ *     is a Simpson-like reversal worth highlighting to the reader
+ *
+ * When the requested covariates have zero variance (e.g. graders see only
+ * "ANSWER: 42" with no markdown variation), the corresponding field is null
+ * — there's nothing to control for.
+ */
+export function styleControlReport(pairs: StyleControlPair[]): StyleControlReport {
+	const n = pairs.length;
+	const diffs = pairs.map((p) => p.withScore - p.noScore);
+	const rawDelta = n === 0 ? 0 : diffs.reduce((a, b) => a + b, 0) / n;
+	const rawP = pairedPermutationTest(
+		pairs.map((p) => p.withScore),
+		pairs.map((p) => p.noScore),
+	).p;
+
+	const styles = pairs.map((p) => ({
+		w: extractStyleFeatures(p.withText),
+		n: extractStyleFeatures(p.noText),
+	}));
+	const dH = styles.map((s) => s.w.headers - s.n.headers);
+	const dB = styles.map((s) => s.w.bullets - s.n.bullets);
+	const dBd = styles.map((s) => s.w.bold - s.n.bold);
+	const dLen = styles.map((s) => s.w.length - s.n.length);
+	const formatVar = variance(dH) + variance(dB) + variance(dBd);
+	const lengthVar = variance(dLen);
+
+	const lookup: Record<"h" | "b" | "bd" | "len", number[]> = {
+		h: dH,
+		b: dB,
+		bd: dBd,
+		len: dLen,
+	};
+	const names: Record<"h" | "b" | "bd" | "len", string> = {
+		h: "headers",
+		b: "bullets",
+		bd: "bold",
+		len: "length",
+	};
+
+	/** Try each candidate covariate set in order; use the first non-singular fit. */
+	const fitWithFallback = (
+		candidates: ("h" | "b" | "bd" | "len")[][],
+	): StyleControlResidual | null => {
+		for (const g of candidates) {
+			// Skip candidates whose features all have zero variance (can't identify).
+			if (g.every((k) => variance(lookup[k]) < 1e-12)) continue;
+			const X = pairs.map((_, i) => [1, ...g.map((k) => lookup[k]![i]!)]);
+			const beta = olsFit(X, diffs);
+			if (!beta) continue;
+			const delta = beta[0]!;
+			const p = sigFlipPermutationP(X, diffs, delta);
+			const absorbedPct =
+				Math.abs(rawDelta) < 1e-12
+					? null
+					: ((Math.abs(rawDelta) - Math.abs(delta)) / Math.abs(rawDelta)) * 100;
+			const signFlipped =
+				Math.abs(rawDelta) > 1e-12 &&
+				Math.abs(delta) > 1e-12 &&
+				Math.sign(rawDelta) !== Math.sign(delta);
+			return {
+				delta,
+				p,
+				covariates: g.map((k) => names[k]),
+				signFlipped,
+				absorbedPct,
+			};
+		}
+		return null;
+	};
+
+	// Markdown-only: try all three style features, then pairs, then singletons.
+	const mdCandidates: ("h" | "b" | "bd")[][] = [
+		["h", "b", "bd"],
+		["h", "b"],
+		["h", "bd"],
+		["b", "bd"],
+		["h"],
+		["b"],
+		["bd"],
+	];
+	// Length-only: single covariate — only fit if it has variance.
+	const lenCandidates: "len"[][] = [["len"]];
+	// Full: markdown + length, with fallbacks down to whichever features vary.
+	const fullCandidates: ("h" | "b" | "bd" | "len")[][] = [
+		["h", "b", "bd", "len"],
+		["h", "b", "len"],
+		["h", "bd", "len"],
+		["b", "bd", "len"],
+		["h", "len"],
+		["b", "len"],
+		["bd", "len"],
+		["h", "b", "bd"],
+		["len"],
+		["h"],
+		["b"],
+		["bd"],
+	];
+
+	const md = formatVar > 1e-12 ? fitWithFallback(mdCandidates) : null;
+	const len = lengthVar > 1e-12 ? fitWithFallback(lenCandidates) : null;
+	const full = formatVar > 1e-12 || lengthVar > 1e-12 ? fitWithFallback(fullCandidates) : null;
+
+	return {
+		n,
+		rawDelta,
+		rawP,
+		full,
+		markdown: md,
+		length: len,
+		formatVar,
+		lengthVar,
+	};
+}
+
+/**
+ * Print the style-control mediation block to stdout (and optionally log it
+ * as a `style_control` JSONL event). Wired into every LLM-graded eval's
+ * summary so the formatting confound is visible alongside the raw headline.
+ */
+export async function reportStyleControlledHeadline(opts: {
+	label: string;
+	pairs: StyleControlPair[];
+	log?: (entry: unknown) => Promise<void>;
+}): Promise<StyleControlReport> {
+	const r = styleControlReport(opts.pairs);
+	const fmt3 = (x: number | null) => (x === null ? "  n/a  " : (x >= 0 ? "+" : "") + x.toFixed(3));
+	const fmtP = (x: number | null) => (x === null ? " n/a  " : x.toFixed(4));
+	const formatResidual = (label: string, res: StyleControlResidual | null) => {
+		if (res === null) return `    residual Δ (${label}): (no variance to control for)`;
+		const absorbed =
+			res.absorbedPct === null
+				? ""
+				: `  (${res.absorbedPct >= 0 ? "absorbed " : "amplified "}${Math.abs(res.absorbedPct).toFixed(0)}%)`;
+		const flip = res.signFlipped ? "  ⚠ SIGN-FLIPPED vs raw (Simpson-like reversal)" : "";
+		const covs = res.covariates.length ? ` [fit on: ${res.covariates.join(", ")}]` : "";
+		return `    residual Δ (${label}): ${fmt3(res.delta)}  (perm p=${fmtP(res.p)})${absorbed}${covs}${flip}`;
+	};
+	console.log(`\n  Style-controlled headline — ${opts.label} (n=${r.n}):`);
+	console.log(`    raw Δ:                 ${fmt3(r.rawDelta)}  (paired-perm p=${fmtP(r.rawP)})`);
+	if (r.markdown === null && r.length === null && r.full === null) {
+		console.log(`    no style/length variance in responses — nothing to control for`);
+	} else {
+		console.log(formatResidual("markdown      ", r.markdown));
+		console.log(formatResidual("length        ", r.length));
+		console.log(formatResidual("markdown+len  ", r.full));
+	}
+	if (opts.log) {
+		await opts.log({ event: "style_control", label: opts.label, ...r });
+	}
+	return r;
 }

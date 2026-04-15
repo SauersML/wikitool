@@ -595,33 +595,8 @@ const HTML = `<!DOCTYPE html>
     text-align: center;
     line-height: 1.5;
   }
-  .flow-node span {
-    display: block;
-    font-size: 11px;
-    color: var(--dim);
-    margin-top: 2px;
-  }
   .flow-hi { border-color: var(--border-strong); color: var(--accent); }
   .flow-pipe { width: 1px; height: 20px; background: var(--border); }
-  .flow-split {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    width: 100%;
-    position: relative;
-  }
-  .flow-split::before {
-    content: "parallel";
-    position: absolute;
-    top: -14px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 9px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .flow-split .flow-node { width: 100%; }
   .flow-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
   .flow-route { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .flow-tag {
@@ -643,13 +618,6 @@ const HTML = `<!DOCTYPE html>
   }
   .eval-card h3 { font-size: 13px; font-weight: 500; color: var(--accent); margin-bottom: 6px; }
   .eval-card p { font-size: 12px; color: var(--dim); margin-bottom: 0; line-height: 1.5; }
-  .eval-card .eval-meta {
-    font-size: 11px;
-    color: var(--dim);
-    margin-top: 8px;
-    opacity: 0.8;
-    font-style: italic;
-  }
 
   footer { margin-top: 64px; font-size: 11px; color: var(--dim); }
   footer a { font-size: 11px; }
@@ -707,8 +675,6 @@ const HTML = `<!DOCTYPE html>
 
     <p>One tool: <code>${TOOL_NAME}</code></p>
 
-    <p>Pass article titles, topics, or descriptive phrases. Section matching is automatic &mdash; include keywords to target specific sections.</p>
-
     <pre><span class="comment">// exact article</span>
 <span class="str">"Albert Einstein"</span>
 
@@ -727,29 +693,24 @@ const HTML = `<!DOCTYPE html>
     <div class="flow">
       <div class="flow-node flow-hi">query</div>
       <div class="flow-pipe"></div>
-      <div class="flow-split">
-        <div class="flow-node">title lookup<span>REST API &mdash; does this exact article exist?</span></div>
-        <div class="flow-node">fulltext search<span>Action API &mdash; what articles mention this?</span></div>
-      </div>
+      <div class="flow-node">search Wikipedia</div>
       <div class="flow-pipe"></div>
       <div class="flow-routes">
         <div class="flow-route">
-          <div class="flow-tag">title found</div>
-          <div class="flow-node flow-hi">single article<span>detect sections from search hits + extra query words &mdash; sections prioritized, intro fills remaining budget</span></div>
+          <div class="flow-tag">exact title</div>
+          <div class="flow-node flow-hi">one article</div>
         </div>
         <div class="flow-route">
-          <div class="flow-tag">no title</div>
-          <div class="flow-node">top 3 results<span>lead + best matching section per result &mdash; budget weighted by rank (60% / 25% / 15%)</span></div>
+          <div class="flow-tag">otherwise</div>
+          <div class="flow-node">a few articles</div>
         </div>
       </div>
       <div class="flow-pipe"></div>
-      <div class="flow-node">parse wikitext per page<span>resolve infoboxes, preserve numeric templates, strip markup/refs/boilerplate</span></div>
+      <div class="flow-node">clean up text</div>
       <div class="flow-pipe"></div>
-      <div class="flow-node">deduplicate per-article<span>sentence-level, across session &mdash; skip already-returned content</span></div>
+      <div class="flow-node">remove duplicates</div>
       <div class="flow-pipe"></div>
-      <div class="flow-node">truncate at sentence boundaries</div>
-      <div class="flow-pipe"></div>
-      <div class="flow-node flow-hi">XML response &thinsp;~4K chars</div>
+      <div class="flow-node flow-hi">return to model</div>
     </div>
   </section>
 
@@ -758,73 +719,60 @@ const HTML = `<!DOCTYPE html>
   <section id="evals">
     <div class="section-label">Evals</div>
 
-    <p>11 benchmarks compare model performance with and without the tool. All use Haiku 4.5 as the test model unless noted.</p>
-
     <div class="eval-grid">
       <div class="eval-card">
         <h3>Wiki Trivia</h3>
-        <p>Questions drawn from willcb/wiki-trivia-questions, spanning obscure corners of history, biology, military technology, and geography &mdash; run with and without the tool to measure retrieval uplift.</p>
-        <div class="eval-meta">25 questions &middot; exact-match judging (acceptable-answer list)</div>
+        <p>Trivia questions answered with and without the Wikipedia tool to measure retrieval uplift.</p>
       </div>
 
       <div class="eval-card">
         <h3>Obscure Information Retrieval</h3>
-        <p>Probes whether Wikipedia access unlocks facts beyond parametric knowledge &mdash; precise figures and named individuals tied to remote villages, minor tunnels, and forgotten ghost towns across five continents.</p>
-        <div class="eval-meta">20 questions &middot; numeric (2&ndash;3% tolerance) + string match</div>
+        <p>20 obscure geography and engineering questions, compared with and without the Wikipedia tool.</p>
       </div>
 
       <div class="eval-card">
         <h3>QA Precise</h3>
-        <p>Technically demanding questions &mdash; from Wiles's 3-5 switch in the FLT proof to crystal field splitting energies &mdash; isolating how much retrieval improves accuracy on knowledge that is hard to recall precisely.</p>
-        <div class="eval-meta">10 questions &middot; graded by Sonnet with live web search &middot; correctness + quality 1&ndash;5</div>
+        <p>10 hard technical questions where the exact answer is hard to recall, scored on correctness and answer quality.</p>
       </div>
 
       <div class="eval-card">
         <h3>HLE Sauers</h3>
-        <p>Multi-step problems from Humanity's Last Exam in genetics, bioinformatics, and related fields requiring precise numerical reasoning or careful elimination of plausible-but-wrong options.</p>
-        <div class="eval-meta">14 questions &middot; rule-based judge + LLM reasoning scorer (1&ndash;5)</div>
+        <p>Questions from Humanity's Last Exam, answered with and without the Wikipedia tool.</p>
       </div>
 
       <div class="eval-card">
         <h3>Private QA</h3>
-        <p>Hand-crafted technical questions spanning probability theory, programming language semantics, genetics, and algorithms &mdash; each paired with a reference rationale so reasoning is graded independently of correctness.</p>
-        <div class="eval-meta">16 questions &middot; answer correctness + LLM reasoning score (1&ndash;5)</div>
+        <p>Previously private technical questions scored on answer correctness and reasoning quality.</p>
       </div>
 
       <div class="eval-card">
         <h3>Good Recency</h3>
-        <p>Real-world questions about late-2025 and 2026 events &mdash; sports championships, awards, geopolitical outcomes &mdash; testing whether the model recognizes its training cutoff and reaches for the tool.</p>
-        <div class="eval-meta">17 questions &middot; LLM judge (answered + hallucination detection)</div>
+        <p>Post-cutoff 2025–2026 events: does the model decline without the tool and commit to answers with it?</p>
       </div>
 
       <div class="eval-card">
         <h3>Bad Recency</h3>
-        <p>Probes hallucination on 2026 events with no Wikipedia article &mdash; from genuinely unanswerable questions (lottery numbers, future contests) to hallucination-prone traps (Eurovision winner, Bitcoin price).</p>
-        <div class="eval-meta">20 questions &middot; LLM-judged 1&ndash;5 hallucination scale</div>
+        <p>2026 events with no Wikipedia article: does the model fabricate specifics, with and without the tool?</p>
       </div>
 
       <div class="eval-card">
         <h3>Incorrect Information Robustness</h3>
-        <p>Tool results are silently tampered &mdash; correct facts swapped with plausible wrong values for obscure measurements, names, and counts &mdash; to test whether the model blindly trusts the source or cross-checks against its own knowledge.</p>
-        <div class="eval-meta">20 questions &middot; strict string + numeric match</div>
+        <p>Tool results are silently tampered with wrong values to see whether the model trusts the source or its own knowledge.</p>
       </div>
 
       <div class="eval-card">
         <h3>CCP Influence Benchmark</h3>
-        <p>Tests whether subtly pro-CCP rewrites of Wikipedia content &mdash; softening "massacre" to "incident," "internment camps" to "vocational education centers" &mdash; shift the model's numeric opinion estimates on contested geopolitical topics.</p>
-        <div class="eval-meta">20 topics &middot; Cohen's d effect size (control vs. treatment)</div>
+        <p>Do subtly pro-CCP edits injected into Wikipedia results shift the model's numeric opinion scores, measured via Cohen's d?</p>
       </div>
 
       <div class="eval-card">
         <h3>Unnecessary Tool Use</h3>
-        <p>Measures whether the model wastes tokens calling Wikipedia on questions any trained model already knows &mdash; arithmetic, basic geography, common science facts &mdash; tracking invocation rate and token overhead.</p>
-        <div class="eval-meta">10 questions &middot; exact-match judging + token comparison</div>
+        <p>Does the model needlessly invoke the Wikipedia tool on trivia it already knows?</p>
       </div>
 
       <div class="eval-card">
         <h3>Implementation Benchmark</h3>
-        <p>Haiku 4.5 implements 20 non-trivial algorithms in Python (Aho-Corasick, SA-IS, Bentley-Ottmann, Earley parser, and more) using a server-side code execution sandbox, then Opus runs the code, writes additional tests, and grades each implementation.</p>
-        <div class="eval-meta">20 algorithms &middot; graded by Opus &middot; correctness, helpfulness, elegance, completion (40 pts)</div>
+        <p>Python implementations of 20 non-trivial algorithms, graded on correctness, helpfulness, elegance, and completion.</p>
       </div>
     </div>
   </section>

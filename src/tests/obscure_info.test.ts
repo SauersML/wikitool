@@ -103,6 +103,10 @@ describe("obscure_info eval", () => {
 	});
 
 	describe("judge function dispatch", () => {
+		// obscure_info.judge enforces a strict "must use ANSWER:" policy — the
+		// task prompt tells the model to end with ANSWER: so a response without
+		// that prefix is treated as non-committal and judged false. These tests
+		// therefore format their inputs with an ANSWER: line.
 		test("dispatches numeric questions correctly", () => {
 			const q: ObscureQuestion = {
 				question: "test?",
@@ -111,8 +115,10 @@ describe("obscure_info eval", () => {
 				numericValue: 4181,
 				tolerancePct: 5,
 			};
-			expect(judge(q, "The elevation is 4181 meters.")).toBe(true);
-			expect(judge(q, "About 9999 meters.")).toBe(false);
+			expect(judge(q, "The elevation is 4181 meters.\nANSWER: 4181 meters")).toBe(true);
+			expect(judge(q, "About 9999 meters.\nANSWER: 9999 meters")).toBe(false);
+			// Missing ANSWER: line → strict policy returns false.
+			expect(judge(q, "The elevation is 4181 meters.")).toBe(false);
 		});
 
 		test("dispatches string questions correctly", () => {
@@ -122,8 +128,12 @@ describe("obscure_info eval", () => {
 				judgeType: "string",
 				acceptableAnswers: ["Fariborz Sahba", "Sahba"],
 			};
-			expect(judge(q, "The architect was Fariborz Sahba.")).toBe(true);
-			expect(judge(q, "The architect was Frank Lloyd Wright.")).toBe(false);
+			expect(judge(q, "The architect was Fariborz Sahba.\nANSWER: Fariborz Sahba")).toBe(true);
+			expect(judge(q, "The architect was Frank Lloyd Wright.\nANSWER: Frank Lloyd Wright")).toBe(
+				false,
+			);
+			// Missing ANSWER: line → strict policy returns false.
+			expect(judge(q, "The architect was Fariborz Sahba.")).toBe(false);
 		});
 	});
 });

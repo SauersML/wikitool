@@ -7,9 +7,7 @@
 	"build": {
 		"command": "bun run build:chat"
 	},
-	"rules": [
-		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": false }
-	],
+	"rules": [{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": false }],
 	"migrations": [
 		{
 			"new_sqlite_classes": ["WikiSearchMCP"],

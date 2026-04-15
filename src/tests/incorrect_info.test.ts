@@ -97,6 +97,9 @@ describe("incorrect_info eval", () => {
 		});
 
 		// --- LLM-judged: ambiguous cases where both values appear ---
+		// These make real calls to Anthropic's API (LLM judge path). They require
+		// credits and network; 60s timeout tolerates cold starts. If the API is
+		// down or out of credits, these will fail rather than hang.
 
 		test("with-tool: correct when model refutes incorrectValue and endorses correctAnswer", async () => {
 			expect(
@@ -106,7 +109,7 @@ describe("incorrect_info eval", () => {
 					"Sydney",
 				),
 			).toBe(true);
-		});
+		}, 60_000);
 
 		test("with-tool: correct when model says incorrect value is wrong", async () => {
 			expect(
@@ -116,7 +119,7 @@ describe("incorrect_info eval", () => {
 					"22.87",
 				),
 			).toBe(true);
-		});
+		}, 60_000);
 
 		test("without-tool: both values present but correct endorsed", async () => {
 			expect(
@@ -126,6 +129,6 @@ describe("incorrect_info eval", () => {
 					"24,400",
 				),
 			).toBe(true);
-		});
+		}, 60_000);
 	});
 });

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { quickAnswerCheck } from "../evals/good_recency";
 
-// Refusal phrasings observed in v3 no-tool Haiku outputs. These should all
-// resolve to `false` (not a commitment) now that quickAnswerCheck inspects the
-// ANSWER: payload for refusal-y phrasings, not just the leading token.
+// Refusal phrasings observed in no-tool Haiku outputs. `quickAnswerCheck`
+// must inspect the ANSWER: payload (not just its leading token) and classify
+// each of these as `false` (not a commitment to an answer).
 const REFUSAL_SAMPLES: { label: string; answer: string }[] = [
 	{
 		label: "cannot provide information about X due to cutoff",
@@ -67,7 +67,8 @@ const COMMITMENT_SAMPLES: { label: string; answer: string }[] = [
 	},
 	{
 		label: "COP30 was held in Belém, Brazil",
-		answer: "COP30 was held in **Belém, Brazil** in November 2025.  ANSWER: COP30 was held in Belém, Brazil.",
+		answer:
+			"COP30 was held in **Belém, Brazil** in November 2025.  ANSWER: COP30 was held in Belém, Brazil.",
 	},
 ];
 

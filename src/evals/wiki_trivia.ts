@@ -11,13 +11,20 @@ import {
 	createWikiMcpServer,
 	DEFAULT_MODEL,
 	extractFinalAnswer,
+	extractJson,
+	GRADER_MODEL,
+	gradeWithModel,
 	initEvalSession,
 	matchesAny,
 	pairedPermutationTest,
 	parseResumeArg,
+	reportStyleControlledHeadline,
 	runAgent,
 	runKey,
 	runOrLogError,
+	type StyleControlPair,
+	safeGrade,
+	stripCodeFences,
 	WIKI_TOOL_NAME,
 } from "./utils";
 
@@ -35,10 +42,11 @@ export interface TriviaQuestion {
 // --- System prompt ---
 
 // Eval-specific task prompt (answer formatting only).
-const TASK_PROMPT =
-	"Answer the trivia question as concisely and accurately as possible. If you don't know, say \"I don't know\" rather than guessing. End with ANSWER: followed by your answer.";
+const TASK_PROMPT = "End with ANSWER: followed by your answer.";
 
 export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
+// No-tool: drop the wiki-centric SHARED_SYSTEM_PROMPT (nonsense without the tool)
+// but keep TASK_PROMPT so answer formatting still applies.
 const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
 
 // --- Questions ---
@@ -255,12 +263,144 @@ export const QUESTIONS: TriviaQuestion[] = [
 
 // --- Judging ---
 
-export function judge(question: TriviaQuestion, response: string): boolean {
-	// Try to extract a final answer line first to avoid matching incidental mentions
-	const finalAnswer = extractFinalAnswer(response);
-	const textToJudge = finalAnswer ?? response;
+// Strip diacritics and normalize punctuation/whitespace so "Echeverría" matches
+// "Echeverria", "Kontakt-5" matches "Kontakt 5", "C. elegans" matches "C elegans".
+// Keeps ASCII letters/digits; everything else collapses to a single space.
+function normalize(s: string): string {
+	return s
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim();
+}
 
-	return matchesAny(textToJudge, question.acceptableAnswers);
+function normalizedContains(haystack: string, needle: string): boolean {
+	const h = ` ${normalize(haystack)} `;
+	const n = normalize(needle);
+	if (!n) return false;
+	return h.includes(` ${n} `);
+}
+
+function matchesAnyNormalized(text: string, acceptableAnswers: string[]): boolean {
+	return acceptableAnswers.some((a) => normalizedContains(text, a));
+}
+
+// Cheap refusal / non-commit detection — avoids paying for an LLM grader on
+// clear "I don't know" responses.
+function looksLikeRefusal(text: string): boolean {
+	const t = text.trim().toLowerCase();
+	if (t.length === 0) return true;
+	const phrases = [
+		"i don't know",
+		"i do not know",
+		"i'm not sure",
+		"i am not sure",
+		"cannot determine",
+		"can't determine",
+		"unable to determine",
+		"unable to answer",
+		"no information",
+		"insufficient information",
+	];
+	return phrases.some((p) => t.includes(p));
+}
+
+function extractCandidate(response: string): string {
+	const finalAnswer = extractFinalAnswer(response);
+	const raw = finalAnswer ?? response;
+	return stripCodeFences(raw);
+}
+
+function buildGradePrompt(
+	question: string,
+	canonicalAnswer: string,
+	acceptableAnswers: string[],
+	candidate: string,
+	fullResponse: string,
+): string {
+	return `You are grading a single trivia question for factual correctness.
+
+Question: ${question}
+Canonical reference answer: ${canonicalAnswer}
+Other acceptable phrasings: ${acceptableAnswers.join(" | ")}
+
+The model's final answer (after "ANSWER:" if present):
+<<<
+${candidate}
+>>>
+
+The model's full response (for context only; do NOT credit mid-reasoning mentions that the model did not commit to):
+<<<
+${fullResponse}
+>>>
+
+Grade "correct" = true only if the model's committed final answer is factually the same entity as the reference (allowing for transliteration, diacritic, abbreviation, word-order, and naming-variant differences — e.g. "C. elegans" = "Caenorhabditis elegans"; "Pheidias" = "Phidias"; "Jose Echeverria" = "José Antonio Echeverría"). Mark false if the model refused, hedged without committing, named a different entity, or only mentioned the correct answer in passing while committing to a wrong one.
+
+Respond ONLY with JSON: {"correct": true} or {"correct": false}.`;
+}
+
+function parseGradeJson(raw: string): boolean {
+	const stripped = stripCodeFences(raw).trim();
+	try {
+		const parsed = JSON.parse(stripped) as { correct?: unknown };
+		if (typeof parsed.correct === "boolean") return parsed.correct;
+	} catch {
+		// fall through to extractJson
+	}
+	const obj = extractJson(raw);
+	if (obj && typeof obj.correct === "boolean") return obj.correct;
+	throw new Error(`Failed to parse grade response: ${raw.slice(0, 200)}`);
+}
+
+export async function judge(
+	question: TriviaQuestion,
+	response: string,
+	opts?: {
+		log?: (entry: unknown) => Promise<void>;
+		index?: number;
+		mode?: string;
+		/** Skip the LLM-grader fallback (used by unit tests to avoid network calls). */
+		disableGrader?: boolean;
+	},
+): Promise<boolean> {
+	const candidate = extractCandidate(response);
+	const textToJudge = candidate || response;
+
+	// Fast path: exact word-boundary substring against curated acceptable list.
+	if (matchesAny(textToJudge, question.acceptableAnswers)) return true;
+	// Normalized path: diacritic/punctuation-insensitive.
+	if (matchesAnyNormalized(textToJudge, question.acceptableAnswers)) return true;
+
+	// No commit → don't waste a grader call.
+	if (looksLikeRefusal(candidate)) return false;
+
+	if (opts?.disableGrader) return false;
+
+	// LLM grader fallback: catches paraphrases/alias forms not enumerated in
+	// acceptableAnswers. `safeGrade` converts grader failures into a `false`
+	// so a malformed grader response can't inflate scores.
+	return await safeGrade({
+		fn: async () => {
+			const prompt = buildGradePrompt(
+				question.question,
+				question.answer,
+				question.acceptableAnswers,
+				candidate,
+				response,
+			);
+			const raw = await gradeWithModel(prompt, GRADER_MODEL);
+			return parseGradeJson(raw);
+		},
+		fallback: false,
+		log: opts?.log,
+		context: {
+			eval: "wiki_trivia",
+			index: opts?.index ?? -1,
+			mode: opts?.mode,
+			grader: "wiki_trivia_llm",
+		},
+	});
 }
 
 // --- Main ---
@@ -288,7 +428,7 @@ async function runQuestion(
 
 	const result = await runAgent(agentOpts);
 
-	const isCorrect = judge(q, result.answer);
+	const isCorrect = await judge(q, result.answer, { log, index, mode });
 	const toolQueries = result.toolCalls.map((tc) => tc.input["query"] ?? "").join("; ");
 
 	console.log(
@@ -368,6 +508,7 @@ async function main() {
 		event: "start",
 		eval: "wiki_trivia",
 		model: DEFAULT_MODEL,
+		grader: GRADER_MODEL,
 		n_questions: questionsToRun.length,
 		modes: ["with-tool", "without-tool"],
 		single_index: singleIndex ?? null,
@@ -413,6 +554,30 @@ async function main() {
 	);
 	console.log(`  Permutation test: diff=${perm.diff.toFixed(3)}, p=${perm.p.toFixed(4)}`);
 
+	// Style-controlled headline: the wiki sysprompt's anti-markdown clause is
+	// only delivered to with-tool, so an LLM grader that prefers structured
+	// prose can produce a spurious mode effect. Print residuals after
+	// controlling for ΔHeaders/ΔBullets/ΔBold/ΔLength so the confound is
+	// visible alongside the raw number. Cols: 0=question, 6=model_answer, 7=is_correct.
+	{
+		const stylePairs: StyleControlPair[] = [];
+		for (const wt of withToolRows) {
+			const wo = withoutToolRows.find((r) => r[0] === wt[0]);
+			if (!wo) continue;
+			stylePairs.push({
+				withScore: wt[7] === "true" ? 1 : 0,
+				noScore: wo[7] === "true" ? 1 : 0,
+				withText: wt[6] ?? "",
+				noText: wo[6] ?? "",
+			});
+		}
+		await reportStyleControlledHeadline({
+			label: "wiki_trivia: is_correct",
+			pairs: stylePairs,
+			log,
+		});
+	}
+
 	await log({
 		event: "summary",
 		eval: "wiki_trivia",
@@ -443,4 +608,8 @@ async function main() {
 	console.log(`  TSV: ${tsvPath}`);
 }
 
-main();
+// Only run when executed directly, not when imported by tests.
+const isMain =
+	import.meta.url === Bun.pathToFileURL(Bun.argv[1] ?? "").href ||
+	import.meta.url === `file://${process.argv[1]}`;
+if (isMain) main();

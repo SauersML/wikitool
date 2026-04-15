@@ -9,14 +9,19 @@ import {
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
+	extractFinalAnswer,
 	extractJson,
 	GRADER_MODEL,
 	initEvalSession,
 	pairedPermutationTest,
 	parseResumeArg,
+	reportStyleControlledHeadline,
 	runAgent,
 	runKey,
 	runOrLogError,
+	type StyleControlPair,
+	safeGrade,
+	stripCodeFences,
 	WIKI_TOOL_NAME,
 } from "./utils";
 
@@ -40,7 +45,9 @@ const TASK_PROMPT =
 	"Provide a clear, well-reasoned answer. End with ANSWER: followed by your answer.";
 
 export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
-const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
+// No-tool: drop the wiki-centric SHARED_SYSTEM_PROMPT (nonsense without the
+// tool) but keep TASK_PROMPT so answer-formatting still applies in both modes.
+const NO_TOOL_SYSTEM_PROMPT: string | undefined = TASK_PROMPT;
 
 export const QUESTIONS: Question[] = [
 	{
@@ -115,39 +122,132 @@ export const QUESTIONS: Question[] = [
 
 // --- Grading ---
 
+function normalizeResponseForGrading(raw: string): {
+	committed: string | null;
+	full: string;
+	isEmpty: boolean;
+} {
+	const full = stripCodeFences(raw ?? "")
+		.replace(/\s+/g, " ")
+		.trim();
+	const committed = extractFinalAnswer(raw ?? "");
+	return { committed, full, isEmpty: full.length === 0 };
+}
+
 function buildGradePrompt(question: string, expected: string, answer: string): string {
-	return `You are Claude Sonnet, an expert evaluator with web search capabilities. Your job is to grade a model's answer for factual correctness.
+	const { committed, full, isEmpty } = normalizeResponseForGrading(answer);
+	const committedBlock = committed
+		? `Model committed answer (extracted from ANSWER: line): ${committed}\n\n`
+		: "";
+	const responseBlock = isEmpty
+		? "Model response: [empty / no answer provided]"
+		: `Model full response: ${full}`;
 
-IMPORTANT: Before judging, use web search to verify the key technical claims in both the reference answer and the model's response. Do not rely solely on your training data — actually look up the facts to confirm them.
+	return `You are an expert evaluator with web search. Grade a model's answer to a technical question for factual correctness.
 
-Given a question, a reference answer, and a model's response, evaluate:
-1. CORRECT: Does the response contain the key facts? Verify these facts via web search before judging. (yes/no)
-2. QUALITY: Rate the response quality from 1-5 (1=wrong, 2=major gaps, 3=mostly correct, 4=correct and clear, 5=excellent with verified details)
+Use web search to verify the key technical claims. Do not rely solely on training data. The reference answer is a rubric of the key facts that must be present — it is NOT the only acceptable wording. An answer may use synonyms, different units, or additional correct detail and still be fully correct.
+
+Judging rules:
+- CORRECT = true iff the response conveys all key facts from the reference (or an equivalent set verified by search). Extra correct detail is fine. Minor wording/formatting differences are fine. A response that is mostly right but misses a key fact or contradicts a verified fact is CORRECT = false.
+- A response that refuses, is empty, only describes the question, or never commits to an answer is CORRECT = false with QUALITY = 1.
+- Ignore chain-of-thought that mentions the right fact in passing but then commits to a wrong final answer — grade on what the model actually concludes.
+- QUALITY scale (integer 1-5): 1=wrong/refusal, 2=major gaps, 3=mostly correct, 4=correct and clear, 5=correct with well-sourced extra detail.
 
 Question: ${question}
-Reference answer: ${expected}
-Model response: ${answer}
+Reference answer (rubric): ${expected}
+${committedBlock}${responseBlock}
 
-After verifying the facts via search, respond ONLY with JSON: {"correct": true, "quality": 4}`;
+After verifying via search, output a single JSON object on the final line in a \`\`\`json fenced block. Example:
+\`\`\`json
+{"correct": true, "quality": 4}
+\`\`\`
+Use only the keys "correct" (boolean) and "quality" (integer 1-5).`;
+}
+
+function coerceBool(v: unknown): boolean | null {
+	if (typeof v === "boolean") return v;
+	if (typeof v === "number") return v !== 0;
+	if (typeof v === "string") {
+		const s = v.trim().toLowerCase();
+		if (s === "true" || s === "yes" || s === "y" || s === "1" || s === "correct") return true;
+		if (s === "false" || s === "no" || s === "n" || s === "0" || s === "incorrect") return false;
+	}
+	return null;
+}
+
+function coerceQuality(v: unknown): number | null {
+	let n: number | null = null;
+	if (typeof v === "number" && Number.isFinite(v)) n = v;
+	else if (typeof v === "string") {
+		const parsed = Number.parseFloat(v.trim());
+		if (Number.isFinite(parsed)) n = parsed;
+	}
+	if (n === null) return null;
+	const rounded = Math.round(n);
+	return Math.max(1, Math.min(5, rounded));
 }
 
 export function parseGradeResponse(raw: string): GradeResult {
-	// Try parsing as JSON first
+	// Try whole-string JSON first — covers the strict "only JSON" response
+	// shape that the unit tests exercise.
 	try {
-		const parsed = JSON.parse(raw.trim());
-		if (typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
-			return { correct: parsed.correct, quality: parsed.quality };
+		const parsed = JSON.parse(raw.trim()) as Record<string, unknown>;
+		const correct = coerceBool(parsed["correct"]);
+		const quality = coerceQuality(parsed["quality"]);
+		if (typeof parsed["correct"] === "boolean" && typeof parsed["quality"] === "number") {
+			const q = parsed["quality"];
+			if (!(Number.isFinite(q) && q >= 1 && q <= 5)) {
+				throw new Error(`Grade quality out of range (expected integer 1-5): ${q}`);
+			}
+			return { correct: parsed["correct"], quality: q };
 		}
-	} catch {
-		// Not top-level JSON — try extracting embedded JSON object
+		if (correct !== null && quality !== null) return { correct, quality };
+	} catch (err) {
+		if (err instanceof Error && err.message.startsWith("Grade quality out of range")) throw err;
+		// fall through
 	}
 
 	const parsed = extractJson(raw);
-	if (parsed && typeof parsed.correct === "boolean" && typeof parsed.quality === "number") {
-		return { correct: parsed.correct as boolean, quality: parsed.quality as number };
+	if (parsed) {
+		// Preserve strict-typed path for the existing unit tests.
+		if (typeof parsed["correct"] === "boolean" && typeof parsed["quality"] === "number") {
+			const q = parsed["quality"];
+			if (!(Number.isFinite(q) && q >= 1 && q <= 5)) {
+				throw new Error(`Grade quality out of range (expected integer 1-5): ${q}`);
+			}
+			return { correct: parsed["correct"], quality: q };
+		}
+		const correct = coerceBool(parsed["correct"]);
+		const quality = coerceQuality(parsed["quality"]);
+		if (correct !== null && quality !== null) return { correct, quality };
 	}
 
 	throw new Error(`Failed to parse grade response: ${raw.slice(0, 200)}`);
+}
+
+// Cheap shortcut: an empty / trivially-short / explicit-refusal answer is
+// always wrong. Skip the web-search grader (which would otherwise waste
+// tokens and occasionally hallucinate a "correct" verdict from rubric leakage).
+const REFUSAL_PATTERNS = [
+	"i cannot",
+	"i can't",
+	"i am unable",
+	"i'm unable",
+	"i do not have",
+	"i don't have",
+	"cannot answer",
+	"can't answer",
+	"no answer",
+];
+
+export function shortCircuitGrade(answer: string): GradeResult | null {
+	const s = (answer ?? "").trim();
+	if (s.length === 0) return { correct: false, quality: 1 };
+	const lower = s.toLowerCase();
+	if (s.length < 20 && REFUSAL_PATTERNS.some((p) => lower.includes(p))) {
+		return { correct: false, quality: 1 };
+	}
+	return null;
 }
 
 // --- Grading via Sonnet API + web search ---
@@ -169,7 +269,19 @@ async function gradeWithSonnet(prompt: string): Promise<string> {
 // --- Main ---
 
 async function main() {
-	const singleIndex = process.argv[2] ? Number.parseInt(process.argv[2], 10) : undefined;
+	// Strip --flag NAME pairs (e.g. `--resume <path>`) before scanning for the
+	// optional positional question index.
+	const args = process.argv.slice(2);
+	const positional: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i]!;
+		if (a.startsWith("--")) {
+			i++;
+			continue;
+		}
+		positional.push(a);
+	}
+	const singleIndex = positional[0] !== undefined ? Number.parseInt(positional[0], 10) : undefined;
 	const questionsToRun = singleIndex !== undefined ? [QUESTIONS[singleIndex]!] : QUESTIONS;
 	const startIndex = singleIndex ?? 0;
 
@@ -254,9 +366,21 @@ async function main() {
 						.map((tc) => (tc.input["query"] as string) ?? "")
 						.join("; ");
 
-					const withGradePrompt = buildGradePrompt(q.question, q.expected, withTool.answer);
-					const withGradeRaw = await gradeWithSonnet(withGradePrompt);
-					const withGrade = parseGradeResponse(withGradeRaw);
+					const withShort = shortCircuitGrade(withTool.answer);
+					const withGradeRaw = withShort
+						? JSON.stringify(withShort)
+						: await gradeWithSonnet(buildGradePrompt(q.question, q.expected, withTool.answer));
+					const withGrade = await safeGrade({
+						fn: async () => parseGradeResponse(withGradeRaw),
+						fallback: { correct: false, quality: 0 },
+						log,
+						context: {
+							eval: "qa_precise",
+							index: qIndex,
+							mode: "with_tool",
+							grader: "parseGradeResponse",
+						},
+					});
 					withToolResults.push(withGrade);
 
 					console.log(
@@ -313,9 +437,21 @@ async function main() {
 						prompt: q.question,
 					});
 
-					const withoutGradePrompt = buildGradePrompt(q.question, q.expected, withoutTool.answer);
-					const withoutGradeRaw = await gradeWithSonnet(withoutGradePrompt);
-					const withoutGrade = parseGradeResponse(withoutGradeRaw);
+					const withoutShort = shortCircuitGrade(withoutTool.answer);
+					const withoutGradeRaw = withoutShort
+						? JSON.stringify(withoutShort)
+						: await gradeWithSonnet(buildGradePrompt(q.question, q.expected, withoutTool.answer));
+					const withoutGrade = await safeGrade({
+						fn: async () => parseGradeResponse(withoutGradeRaw),
+						fallback: { correct: false, quality: 0 },
+						log,
+						context: {
+							eval: "qa_precise",
+							index: qIndex,
+							mode: "without_tool",
+							grader: "parseGradeResponse",
+						},
+					});
 					withoutToolResults.push(withoutGrade);
 
 					console.log(
@@ -398,6 +534,36 @@ async function main() {
 	console.log(
 		`  Permutation test (quality): diff=${permQuality.diff.toFixed(3)}, p=${permQuality.p.toFixed(4)}`,
 	);
+
+	// Style-controlled headlines (cols: 0=question, 5=model_answer, 6=correct, 7=quality_score).
+	{
+		const wRows = rows.filter((r) => r[2] === "with_tool");
+		const nRows = rows.filter((r) => r[2] === "without_tool");
+		const buildPairs = (scoreCol: number, toNumber: (v: string) => number): StyleControlPair[] => {
+			const out: StyleControlPair[] = [];
+			for (const wt of wRows) {
+				const wo = nRows.find((r) => r[0] === wt[0]);
+				if (!wo) continue;
+				out.push({
+					withScore: toNumber(wt[scoreCol] ?? ""),
+					noScore: toNumber(wo[scoreCol] ?? ""),
+					withText: wt[5] ?? "",
+					noText: wo[5] ?? "",
+				});
+			}
+			return out;
+		};
+		await reportStyleControlledHeadline({
+			label: "qa_precise: correct",
+			pairs: buildPairs(6, (v) => (v === "true" ? 1 : 0)),
+			log,
+		});
+		await reportStyleControlledHeadline({
+			label: "qa_precise: quality_score",
+			pairs: buildPairs(7, (v) => Number(v) || 0),
+			log,
+		});
+	}
 
 	await log({
 		event: "summary",

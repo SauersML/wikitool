@@ -18,6 +18,7 @@ import {
 	runAgent,
 	runKey,
 	runOrLogError,
+	stripCodeFences,
 	WIKI_TOOL_NAME,
 } from "./utils";
 
@@ -42,12 +43,14 @@ export type ObscureQuestion = NumericQuestion | StringQuestion;
 
 // --- System prompt ---
 
-// Eval-specific task prompt (answer formatting only).
+// Answer-format + refusal instructions appended to both modes.
 const TASK_PROMPT =
 	"Answer the question as precisely as possible. If you don't know the answer, say \"I don't know\" rather than guessing. End with ANSWER: followed by your precise answer.";
 
 export const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
-const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
+// No-tool mode omits the wiki-centric shared sysprompt but keeps TASK_PROMPT so
+// the judge can still extract "ANSWER: …".
+const NO_TOOL_SYSTEM_PROMPT: string | undefined = TASK_PROMPT;
 
 // --- Questions ---
 
@@ -211,6 +214,46 @@ export const QUESTIONS: ObscureQuestion[] = [
 
 // --- Judging ---
 
+// Non-commitment / refusal phrases. If the final-answer line is essentially one
+// of these, the model did not commit to an answer and we must not match.
+const REFUSAL_PATTERNS = [
+	"i don't know",
+	"i do not know",
+	"i'm not sure",
+	"i am not sure",
+	"not sure",
+	"unknown",
+	"unable to determine",
+	"cannot determine",
+	"can't determine",
+	"no information",
+	"n/a",
+	"unclear",
+	"insufficient information",
+];
+
+function normalizeAnswer(text: string): string {
+	// Strip code fences, markdown bold/italic/backticks, trailing punctuation,
+	// and collapse whitespace. Unicode-normalize so curly quotes / NBSPs behave.
+	let s = stripCodeFences(text).normalize("NFKC");
+	s = s.replace(/\*+/g, "").replace(/`+/g, "").replace(/_+/g, " ");
+	s = s.replace(/\s+/g, " ").trim();
+	// Strip a single pair of wrapping quotes.
+	if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+		s = s.slice(1, -1).trim();
+	}
+	return s;
+}
+
+function isRefusal(text: string): boolean {
+	const lower = text.toLowerCase().trim();
+	if (!lower) return true;
+	return REFUSAL_PATTERNS.some(
+		(p) =>
+			lower === p || lower.startsWith(`${p}.`) || lower.startsWith(`${p},`) || lower === `${p}.`,
+	);
+}
+
 export function judgeNumeric(response: string, expected: number, tolerancePct: number): boolean {
 	const numbers = extractNumbers(response);
 	const tolerance = expected * (tolerancePct / 100);
@@ -218,14 +261,20 @@ export function judgeNumeric(response: string, expected: number, tolerancePct: n
 }
 
 export function judge(question: ObscureQuestion, response: string): boolean {
-	// Try to extract a final answer line first to avoid matching incidental mentions
-	const finalAnswer = extractFinalAnswer(response);
-	const textToJudge = finalAnswer ?? response;
+	// Strict policy: require an explicit final-answer line. Falling back to the
+	// full response causes false positives — models routinely mention the
+	// correct string mid-reasoning while ultimately refusing, and years / tool
+	// artifacts in the transcript can land within numeric tolerance.
+	const rawFinal = extractFinalAnswer(response);
+	if (rawFinal === null) return false;
+
+	const finalAnswer = normalizeAnswer(rawFinal);
+	if (!finalAnswer || isRefusal(finalAnswer)) return false;
 
 	if (question.judgeType === "numeric") {
-		return judgeNumeric(textToJudge, question.numericValue, question.tolerancePct);
+		return judgeNumeric(finalAnswer, question.numericValue, question.tolerancePct);
 	}
-	return matchesAny(textToJudge, question.acceptableAnswers);
+	return matchesAny(finalAnswer, question.acceptableAnswers);
 }
 
 // --- Main ---
@@ -413,4 +462,8 @@ async function main() {
 	console.log(`  TSV: ${tsvPath}`);
 }
 
-main();
+// Only run when executed directly, not when imported by tests.
+const isMain =
+	import.meta.url === Bun.pathToFileURL(Bun.argv[1] ?? "").href ||
+	import.meta.url === `file://${process.argv[1]}`;
+if (isMain) main();

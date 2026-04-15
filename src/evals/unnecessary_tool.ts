@@ -9,6 +9,7 @@ import {
 	createSeenContent,
 	createWikiMcpServer,
 	DEFAULT_MODEL,
+	extractFinalAnswer,
 	initEvalSession,
 	matchesAny,
 	pairedPermutationTest,
@@ -16,6 +17,7 @@ import {
 	runAgent,
 	runKey,
 	runOrLogError,
+	stripCodeFences,
 	WIKI_TOOL_NAME,
 } from "./utils";
 
@@ -34,7 +36,9 @@ const TASK_PROMPT = "";
 export const SYSTEM_PROMPT = TASK_PROMPT
 	? `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`
 	: SHARED_SYSTEM_PROMPT;
-const NO_TOOL_SYSTEM_PROMPT = TASK_PROMPT;
+// No-tool: NO system prompt. The production sysprompt is wiki-centric and
+// would be nonsense without the tool.
+const NO_TOOL_SYSTEM_PROMPT: string | undefined = undefined;
 
 export const QUESTIONS: UnnecessaryToolQuestion[] = [
 	{
@@ -78,6 +82,54 @@ export const QUESTIONS: UnnecessaryToolQuestion[] = [
 		acceptableAnswers: ["7", "seven"],
 	},
 ];
+
+// --- Grading ---
+
+// Refusals / non-answers that must never count as correct even if an
+// acceptableAnswer happens to be a substring of the surrounding prose.
+const REFUSAL_PATTERNS = [
+	"i cannot",
+	"i can't",
+	"i'm unable",
+	"i am unable",
+	"i don't know",
+	"i do not know",
+	"unable to answer",
+	"cannot answer",
+];
+
+function normalize(s: string): string {
+	// NBSP + other unicode whitespace → regular space; collapse runs.
+	return s.replaceAll(/\s+/gu, " ").trim();
+}
+
+function isRefusal(text: string): boolean {
+	const t = text.toLowerCase();
+	return REFUSAL_PATTERNS.some((p) => t.includes(p));
+}
+
+/**
+ * Grade a short-trivia response. Prefer the explicitly-committed final answer
+ * (reduces FPs from mid-reasoning mentions like "some might say 3, but…");
+ * fall back to full-response word-boundary matching for plain one-line answers
+ * that never use an ANSWER: prefix.
+ */
+function gradeAnswer(raw: string, acceptable: string[]): boolean {
+	const cleaned = normalize(stripCodeFences(raw ?? ""));
+	if (!cleaned) return false;
+	if (isRefusal(cleaned) && !matchesAny(cleaned, acceptable)) return false;
+
+	const final = extractFinalAnswer(cleaned);
+	if (final) {
+		// Strip wrapping punctuation/markdown from the committed answer line.
+		const stripped = final.replace(/^[\s"'`*_([]+|[\s"'`*_.!?,;:)\]]+$/g, "");
+		if (stripped && matchesAny(stripped, acceptable)) return true;
+		// Committed to something that doesn't contain any acceptable answer:
+		// trust the commitment to avoid FPs from earlier mid-reasoning mentions.
+		if (stripped) return false;
+	}
+	return matchesAny(cleaned, acceptable);
+}
 
 // --- Main ---
 
@@ -133,56 +185,52 @@ async function main() {
 		if (completed.has(runKey(idx, "with-tool"))) {
 			console.log("  [with-tool] (already done — skipping)");
 		} else {
-			const row = await runOrLogError(
-				log,
-				{ index: idx, mode: "with-tool", logPath },
-				async () => {
-					console.log("  [with-tool] running...");
-					const seen = createSeenContent();
-					const wikiServer = createWikiMcpServer({ seen });
-					const withResult: AgentResult = await runAgent({
-						system: SYSTEM_PROMPT,
-						prompt: q.question,
-						mcpServers: { wiki: wikiServer },
-						allowedTools: [WIKI_TOOL_NAME],
-					});
+			const row = await runOrLogError(log, { index: idx, mode: "with-tool", logPath }, async () => {
+				console.log("  [with-tool] running...");
+				const seen = createSeenContent();
+				const wikiServer = createWikiMcpServer({ seen });
+				const withResult: AgentResult = await runAgent({
+					system: SYSTEM_PROMPT,
+					prompt: q.question,
+					mcpServers: { wiki: wikiServer },
+					allowedTools: [WIKI_TOOL_NAME],
+				});
 
-					const toolQueries = withResult.toolCalls
-						.map((tc) => (tc.input["query"] as string) ?? "")
-						.join("; ");
-					const withCorrect = matchesAny(withResult.answer, q.acceptableAnswers);
+				const toolQueries = withResult.toolCalls
+					.map((tc) => (tc.input["query"] as string) ?? "")
+					.join("; ");
+				const withCorrect = gradeAnswer(withResult.answer, q.acceptableAnswers);
 
-					console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
-					console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
-					console.log(`  [with-tool] correct: ${withCorrect}`);
+				console.log(`  [with-tool] answer: ${withResult.answer.slice(0, 120)}`);
+				console.log(`  [with-tool] used_tool: ${withResult.usedTool}`);
+				console.log(`  [with-tool] correct: ${withCorrect}`);
 
-					const r: string[] = [
-						q.question,
-						q.acceptableAnswers.join(", "),
-						"with-tool",
-						String(withResult.usedTool),
-						toolQueries,
-						withResult.answer,
-						String(withCorrect),
-						String(withResult.turns),
-						String(withResult.inputTokens),
-						String(withResult.outputTokens),
-					];
-					await log(
-						buildRunLogEntry({
-							index: idx,
-							mode: "with-tool",
-							question: q.question,
-							expected: q.acceptableAnswers,
-							agentResult: withResult,
-							verdict: { correct: withCorrect, used_tool: withResult.usedTool },
-							tsvRow: r,
-						}),
-					);
-					await appendRow(r);
-					return r;
-				},
-			);
+				const r: string[] = [
+					q.question,
+					q.acceptableAnswers.join(", "),
+					"with-tool",
+					String(withResult.usedTool),
+					toolQueries,
+					withResult.answer,
+					String(withCorrect),
+					String(withResult.turns),
+					String(withResult.inputTokens),
+					String(withResult.outputTokens),
+				];
+				await log(
+					buildRunLogEntry({
+						index: idx,
+						mode: "with-tool",
+						question: q.question,
+						expected: q.acceptableAnswers,
+						agentResult: withResult,
+						verdict: { correct: withCorrect, used_tool: withResult.usedTool },
+						tsvRow: r,
+					}),
+				);
+				await appendRow(r);
+				return r;
+			});
 			rows.push(row);
 		}
 
@@ -200,7 +248,7 @@ async function main() {
 						prompt: q.question,
 					});
 
-					const withoutCorrect = matchesAny(withoutResult.answer, q.acceptableAnswers);
+					const withoutCorrect = gradeAnswer(withoutResult.answer, q.acceptableAnswers);
 
 					console.log(`  [without-tool] answer: ${withoutResult.answer.slice(0, 120)}`);
 					console.log(`  [without-tool] correct: ${withoutCorrect}`);
@@ -295,4 +343,8 @@ async function main() {
 	console.log(`TSV: ${tsvPath}`);
 }
 
-main();
+// Only run when executed directly, not when imported by tests.
+const isMain =
+	import.meta.url === Bun.pathToFileURL(Bun.argv[1] ?? "").href ||
+	import.meta.url === `file://${process.argv[1]}`;
+if (isMain) main();

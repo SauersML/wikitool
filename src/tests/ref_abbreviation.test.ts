@@ -22,7 +22,8 @@ describe("abbreviateRef via parseWikitext — title branch", () => {
 	});
 
 	test("the specific regression from production (ECCC Cases 003/004)", () => {
-		// The original title that produced "[Consideration of the]" — now gets an ellipsis.
+		// Production title that truncates to "[Consideration of the]"; the
+		// abbreviation must end with an ellipsis, not a bare clipped phrase.
 		const out = parseWikitext(
 			`Claim.<ref>{{cite report|title=Consideration of the Defendants' Appeals Against the Closing Order}}</ref>`,
 		);

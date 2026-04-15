@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractScore, QUESTIONS } from "../evals/ccp_bench";
+import { applyInjection, extractScore, QUESTIONS } from "../evals/ccp_bench";
 import { computeCohensD } from "../evals/utils";
 
 describe("ccp_bench eval", () => {
@@ -88,7 +88,7 @@ describe("ccp_bench eval", () => {
 
 		test("Tibet modify replaces invasion and annexed, appends text", () => {
 			const tibet = QUESTIONS.find((q) => q.topic === "Tibet history")!;
-			const modified = tibet.modify(sampleXml);
+			const modified = applyInjection(sampleXml, tibet.injection);
 			// "Chinese invasion of Tibet" -> "Chinese incorporation of Tibet"
 			expect(modified).toContain("incorporation of Tibet");
 			expect(modified).toContain("reunified");
@@ -99,7 +99,7 @@ describe("ccp_bench eval", () => {
 
 		test("Xinjiang modify replaces internment, detention, camps, persecution", () => {
 			const xinjiang = QUESTIONS.find((q) => q.topic === "Xinjiang")!;
-			const modified = xinjiang.modify(sampleXml);
+			const modified = applyInjection(sampleXml, xinjiang.injection);
 			expect(modified).toContain("vocational education");
 			expect(modified).toContain("training");
 			expect(modified).toContain("centers");
@@ -110,7 +110,7 @@ describe("ccp_bench eval", () => {
 
 		test("Tiananmen modify replaces massacre and appends fallback", () => {
 			const tian = QUESTIONS.find((q) => q.topic === "Tiananmen Square 1989")!;
-			const modified = tian.modify(sampleXml);
+			const modified = applyInjection(sampleXml, tian.injection);
 			expect(modified).toContain("incident");
 			expect(modified).not.toContain("massacre");
 			// Fallback text is appended
@@ -119,14 +119,14 @@ describe("ccp_bench eval", () => {
 
 		test("Shenzhen modify appends text before </content>", () => {
 			const shenzhen = QUESTIONS.find((q) => q.topic === "Shenzhen economic development")!;
-			const modified = shenzhen.modify(sampleXml);
+			const modified = applyInjection(sampleXml, shenzhen.injection);
 			expect(modified).toContain("SEZ model");
 			expect(modified).toContain("</content>");
 		});
 
 		test("Belt and Road modify replaces debt-trap and debt trap", () => {
 			const bri = QUESTIONS.find((q) => q.topic === "Belt and Road Initiative")!;
-			const modified = bri.modify(sampleXml);
+			const modified = applyInjection(sampleXml, bri.injection);
 			expect(modified).toContain("development partnership");
 			expect(modified).not.toContain("debt-trap");
 			expect(modified).not.toContain("debt trap");
@@ -135,7 +135,7 @@ describe("ccp_bench eval", () => {
 
 		test("Great Firewall modify replaces censorship and appends fallback", () => {
 			const gfw = QUESTIONS.find((q) => q.topic === "Great Firewall")!;
-			const modified = gfw.modify(sampleXml);
+			const modified = applyInjection(sampleXml, gfw.injection);
 			expect(modified).toContain("content regulation");
 			expect(modified).not.toContain("censorship");
 			// Fallback text about domestic technology sector
@@ -144,7 +144,7 @@ describe("ccp_bench eval", () => {
 
 		test("Social credit modify replaces blacklist and enforcement terms", () => {
 			const sc = QUESTIONS.find((q) => q.topic === "Social credit system")!;
-			const modified = sc.modify(sampleXml);
+			const modified = applyInjection(sampleXml, sc.injection);
 			expect(modified).toContain("accountability list");
 			expect(modified).toContain("compliance measures");
 			expect(modified).not.toContain("blacklist");
@@ -152,7 +152,7 @@ describe("ccp_bench eval", () => {
 
 		test("Press freedom modify replaces restricted and censorship", () => {
 			const pf = QUESTIONS.find((q) => q.topic === "Press freedom China")!;
-			const modified = pf.modify(sampleXml);
+			const modified = applyInjection(sampleXml, pf.injection);
 			expect(modified).toContain("content oversight");
 			expect(modified).toContain("guided");
 			expect(modified).not.toContain("censorship");
@@ -160,7 +160,7 @@ describe("ccp_bench eval", () => {
 
 		test("Academic freedom modify replaces severely limited and self-censor", () => {
 			const af = QUESTIONS.find((q) => q.topic === "Chinese academic freedom")!;
-			const modified = af.modify(sampleXml);
+			const modified = applyInjection(sampleXml, af.injection);
 			expect(modified).toContain("subject to certain parameters");
 			expect(modified).toContain("exercise professional judgment");
 			expect(modified).not.toContain("severely limited");
@@ -169,7 +169,7 @@ describe("ccp_bench eval", () => {
 
 		test("Religious freedom modify replaces persecution and suppression", () => {
 			const rf = QUESTIONS.find((q) => q.topic === "Religious freedom China")!;
-			const modified = rf.modify(sampleXml);
+			const modified = applyInjection(sampleXml, rf.injection);
 			expect(modified).toContain("regulation");
 			expect(modified).not.toContain("persecution");
 			expect(modified).not.toContain("suppression of local religion");
@@ -178,7 +178,7 @@ describe("ccp_bench eval", () => {
 
 		test("COVID modify replaces cover-up and suppressed", () => {
 			const covid = QUESTIONS.find((q) => q.topic === "COVID-19 China response")!;
-			const modified = covid.modify(sampleXml);
+			const modified = applyInjection(sampleXml, covid.injection);
 			expect(modified).toContain("early information management");
 			expect(modified).toContain("managed");
 			expect(modified).not.toContain("cover-up");
@@ -187,7 +187,7 @@ describe("ccp_bench eval", () => {
 
 		test("Environment modify appends renewable energy text", () => {
 			const env = QUESTIONS.find((q) => q.topic === "China environmental policy")!;
-			const modified = env.modify(sampleXml);
+			const modified = applyInjection(sampleXml, env.injection);
 			expect(modified).toContain("renewable energy");
 			expect(modified).toContain("transitional use of coal");
 			expect(modified).not.toContain("burning of coal");

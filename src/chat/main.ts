@@ -125,8 +125,8 @@ function forgetKey() {
 	sessionStorage.removeItem(KEY_LS);
 	state.key = null;
 	state.keyPersistent = false;
-	// Drop the whole conversation too — tool queries may reveal what the user
-	// was researching; the new user shouldn't inherit that.
+	// Drop the whole conversation too — tool queries may reveal what the
+	// prior user was researching and must not leak to whoever uses the UI next.
 	state.conversation = [];
 	state.seen = createSeenContent();
 }
@@ -941,7 +941,8 @@ function handleKeySave() {
 	closeKeyModal();
 	setStatus("key saved", "ok");
 	setTimeout(() => setStatus("", ""), 2000);
-	// If an auth error was the reason we're here, retry.
+	// If an auth-error banner is showing, the user just updated the key to
+	// resolve it — dismiss the banner and retry the failed request.
 	const hadAuthError = document.querySelector(".error-banner.auth");
 	if (hadAuthError) {
 		hadAuthError.remove();

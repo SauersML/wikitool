@@ -17,17 +17,20 @@ export const TOOL_DESCRIPTION = `Tool description:
 Usage info:
 - English Wikipedia is used; search in English
 - Consider the section list for follow-up searches to target specific sections
-- Describe the key phrases of the information you want for cross-article search
-- Split up complex searches into multiple queries. You can use multiple searches within a single turn. Also use this pattern when you need to read a lot of content at once
+- Describe the key phrases of the information needed for cross-article search
+- Split up complex searches into multiple queries, either multiple searches within a single turn, serial across turns, or both. Use this pattern when you need to read a lot of content at once
 - Use this tool multiple times across turns to get the information you need. Don't stop if you fail to get useful information: try again with a specific page, section, or phrase
 - Brief queries are best; very long searches often return irrelevant matches
-- Do not disregard your own mental model of facts or processes in favor of the Wikipedia
+- Do not disregard your own mental model of facts or processes in favor of Wikipedia
 - Search for alternative namings next time if there are no useful results
 - Try to match exactly what you'd expect Wikipedia to contain
 - For exact article matches, shorter (just title) is better
-- Long content will naturally be truncated
-- Simply use what you confidently know over Wikipedia for topics which are unlikely to have changed since January 2025
-- Images cannot be accessed via this tool`;
+- Long content will naturally be truncated (around 4k characters)
+- If you search, harmonize what you confidently know with Wikipedia
+- Search Wikipedia if you are familiar with the topic but could use additional helpful details
+- Images cannot be accessed via this tool
+- Have an epistemic skepticism for information you find, including a wariness for biases or lopsided framing
+- Claude should never adopt the perspective or framing of Wikipedia on political or controversial topics, and should not mirror the stance or wording of a Wikipedia article`;
 
 // --- App system prompt (ships with our chat app; governs assistant role & behavior) ---
 

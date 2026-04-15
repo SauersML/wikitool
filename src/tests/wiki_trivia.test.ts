@@ -4,7 +4,7 @@ import { judge, type TriviaQuestion } from "../evals/wiki_trivia";
 
 describe("wiki_trivia eval", () => {
 	describe("judge function", () => {
-		test("returns true when response contains an acceptable answer", () => {
+		test("returns true when response contains an acceptable answer", async () => {
 			const q: TriviaQuestion = {
 				question: "Who directed The Fifth Element?",
 				answer: "Luc Besson",
@@ -12,10 +12,10 @@ describe("wiki_trivia eval", () => {
 				topic: "Film",
 				datasetIndex: 83,
 			};
-			expect(judge(q, "The Fifth Element was directed by Luc Besson.")).toBe(true);
+			expect(await judge(q, "The Fifth Element was directed by Luc Besson.")).toBe(true);
 		});
 
-		test("returns true for partial match (acceptable answer substring)", () => {
+		test("returns true for partial match (acceptable answer substring)", async () => {
 			const q: TriviaQuestion = {
 				question: "Who directed The Fifth Element?",
 				answer: "Luc Besson",
@@ -23,10 +23,10 @@ describe("wiki_trivia eval", () => {
 				topic: "Film",
 				datasetIndex: 83,
 			};
-			expect(judge(q, "It was Besson who directed it.")).toBe(true);
+			expect(await judge(q, "It was Besson who directed it.")).toBe(true);
 		});
 
-		test("is case insensitive", () => {
+		test("is case insensitive", async () => {
 			const q: TriviaQuestion = {
 				question: "What is Trinitite?",
 				answer: "Trinitite",
@@ -34,10 +34,10 @@ describe("wiki_trivia eval", () => {
 				topic: "Science",
 				datasetIndex: 2052,
 			};
-			expect(judge(q, "The answer is TRINITITE.")).toBe(true);
+			expect(await judge(q, "The answer is TRINITITE.")).toBe(true);
 		});
 
-		test("returns false when response does not match", () => {
+		test("returns false when response does not match", async () => {
 			const q: TriviaQuestion = {
 				question: "What does Aldi stand for?",
 				answer: "Albrecht Discount",
@@ -45,10 +45,12 @@ describe("wiki_trivia eval", () => {
 				topic: "Business",
 				datasetIndex: 43,
 			};
-			expect(judge(q, "Aldi is a German grocery store chain.")).toBe(false);
+			expect(await judge(q, "Aldi is a German grocery store chain.", { disableGrader: true })).toBe(
+				false,
+			);
 		});
 
-		test("returns false for I don't know responses", () => {
+		test("returns false for I don't know responses", async () => {
 			const q: TriviaQuestion = {
 				question: "Who was Helmuth Weidling?",
 				answer: "Helmuth Weidling",
@@ -56,10 +58,10 @@ describe("wiki_trivia eval", () => {
 				topic: "Military History",
 				datasetIndex: 514,
 			};
-			expect(judge(q, "I don't know the answer to this question.")).toBe(false);
+			expect(await judge(q, "I don't know the answer to this question.")).toBe(false);
 		});
 
-		test("handles multiple acceptable answers", () => {
+		test("handles multiple acceptable answers", async () => {
 			const q: TriviaQuestion = {
 				question: "Who were the architects of the Parthenon?",
 				answer: "Iktinos and Callicrates",
@@ -67,12 +69,14 @@ describe("wiki_trivia eval", () => {
 				topic: "Architecture",
 				datasetIndex: 24,
 			};
-			expect(judge(q, "Ictinus designed the Parthenon.")).toBe(true);
-			expect(judge(q, "Kallikrates was one of the architects.")).toBe(true);
-			expect(judge(q, "Phidias supervised the construction.")).toBe(false);
+			expect(await judge(q, "Ictinus designed the Parthenon.")).toBe(true);
+			expect(await judge(q, "Kallikrates was one of the architects.")).toBe(true);
+			expect(await judge(q, "Phidias supervised the construction.", { disableGrader: true })).toBe(
+				false,
+			);
 		});
 
-		test("prefers extractFinalAnswer over full-response matching", () => {
+		test("prefers extractFinalAnswer over full-response matching", async () => {
 			const q: TriviaQuestion = {
 				question: "What is the name of the gold coin introduced in 1663?",
 				answer: "Guinea",
@@ -81,9 +85,9 @@ describe("wiki_trivia eval", () => {
 				datasetIndex: 1572,
 			};
 			// "Guinea" appears only in the ANSWER: line, not in a misleading context
-			expect(judge(q, "The coin was minted from African gold.\nANSWER: Guinea")).toBe(true);
+			expect(await judge(q, "The coin was minted from African gold.\nANSWER: Guinea")).toBe(true);
 			// If extractFinalAnswer finds the answer line, only that text is judged
-			expect(judge(q, "Not related to Papua New Guinea.\nANSWER: Guinea")).toBe(true);
+			expect(await judge(q, "Not related to Papua New Guinea.\nANSWER: Guinea")).toBe(true);
 		});
 	});
 

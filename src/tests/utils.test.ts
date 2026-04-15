@@ -15,12 +15,14 @@ describe("extractFinalAnswer", () => {
 
 	test("extracts from 'The answer is ...' pattern", () => {
 		const response = "Based on my research, the answer is Vincenzo Scamozzi.";
-		expect(extractFinalAnswer(response)).toBe("Vincenzo Scamozzi.");
+		// Trailing punctuation and wrapping markdown are stripped so downstream
+		// matching (leadingLetterIs, containsWord) doesn't fail on e.g. "B." vs "B".
+		expect(extractFinalAnswer(response)).toBe("Vincenzo Scamozzi");
 	});
 
 	test("extracts from 'My answer is ...' pattern", () => {
 		const response = "After checking Wikipedia, my answer is B.";
-		expect(extractFinalAnswer(response)).toBe("B.");
+		expect(extractFinalAnswer(response)).toBe("B");
 	});
 
 	test("extracts from 'My answer: ...' pattern", () => {

@@ -199,8 +199,8 @@ describe("non-numeric templates are still stripped", () => {
 
 describe("bug replication: numbers destroyed by stripNestedBraces", () => {
 	test("REGRESSION: convert|287|m|ft must not leave double spaces", () => {
-		// This was the original bug: {{convert|287|m|ft}} was entirely removed,
-		// leaving "The tunnel is  long" (double space)
+		// {{convert|287|m|ft}} must not be stripped entirely — doing so would
+		// leave "The tunnel is  long" (double space) and lose the number.
 		const raw =
 			"The tunnel is {{convert|287|m|ft}} long and reaches a depth of {{convert|462|m|ft}} below sea level.";
 		const result = parseWikitext(raw);

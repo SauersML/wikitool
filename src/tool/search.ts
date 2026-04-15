@@ -485,12 +485,11 @@ export function extractInfoboxes(text: string): string {
 	let i = 0;
 
 	while (i < text.length) {
-		// Look for {{ opening
 		if (i + 1 < text.length && text[i] === "{" && text[i + 1] === "{") {
-			// Check if this is an Infobox template
 			const afterBraces = text.slice(i + 2, i + 2 + 20);
 			if (/^\s*infobox/i.test(afterBraces)) {
-				// Find the end of this template using brace-depth counting
+				// Walk to the matching }} with brace-depth counting so nested
+				// templates inside the infobox don't confuse the boundary.
 				let depth = 1;
 				let j = i + 2;
 				while (j < text.length && depth > 0) {
@@ -648,9 +647,9 @@ function parseInfoboxContent(raw: string): string {
 		val = val.replace(/\s*\|\s*\w+\s*=[\s\S]*$/, "");
 		// Strip leftover image/file wikitext syntax
 		val = val.replace(/frameless\|[^|]*(\|[^|]*)*/g, "");
-		// Strip ref tags at end of value: [MSR], [b92], [wiki] etc.
-		// Runs after template truncation so refs are now at the end.
-		// Only strips trailing refs to preserve notation like [Xe] in electron configs.
+		// Strip trailing ref tags ([MSR], [b92], [wiki] etc.): template
+		// truncation above pushes refs to the end of the value. Only trailing
+		// refs are stripped to preserve notation like [Xe] in electron configs.
 		val = val.replace(/(\s*\[[^[\]]{1,50}\])+\s*$/g, "");
 		// Clean up excess whitespace
 		val = collapseWhitespace(val);
@@ -708,9 +707,7 @@ function stripNestedBracesSimple(text: string): string {
  * "elevation_m" → "Elevation m", "first_ascent" → "First ascent"
  */
 function formatInfoboxKey(key: string): string {
-	// Replace underscores with spaces
 	let k = key.replaceAll("_", " ").trim();
-	// Title case the first letter
 	if (k.length > 0) {
 		k = k.charAt(0).toUpperCase() + k.slice(1);
 	}
@@ -892,7 +889,7 @@ function cleanMathContent(latex: string): string {
 	// Remaining \commands and \symbols
 	t = t.replace(/\\[a-zA-Z]+/g, " ");
 	t = t.replace(/\\./g, "");
-	// All remaining { } (LaTeX grouping — safe to strip now)
+	// Remaining { } are LaTeX grouping braces; safe to strip at this point.
 	t = t.replace(/[{}]/g, "");
 	// Cleanup
 	t = t.replace(/\s+/g, " ").trim();

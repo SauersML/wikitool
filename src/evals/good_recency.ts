@@ -15,9 +15,11 @@ import {
 	gradeWithModel,
 	initEvalSession,
 	parseResumeArg,
+	reportStyleControlledHeadline,
 	runAgent,
 	runKey,
 	runOrLogError,
+	type StyleControlPair,
 	safeGrade,
 	stripCodeFences,
 	WIKI_TOOL_NAME,
@@ -53,15 +55,14 @@ export const QUESTIONS = [
 // System prompt
 // ---------------------------------------------------------------------------
 
-// Eval-specific task prompt (answer formatting only).
+// Answer-format instructions appended to both modes.
 const TASK_PROMPT = "End with ANSWER: followed by your answer.";
 
 // With-tool: shared sysprompt + task formatting.
 const SYSTEM_PROMPT = `${SHARED_SYSTEM_PROMPT}\n\n${TASK_PROMPT}`;
 
-// No-tool: drop the wiki-centric SHARED_SYSTEM_PROMPT (nonsense without the
-// tool) but keep TASK_PROMPT so the answer-formatting instruction still
-// applies in both modes — needed for the judge to extract "ANSWER: ...".
+// No-tool mode omits the wiki-centric shared sysprompt but keeps TASK_PROMPT so
+// the judge can still extract "ANSWER: ...".
 const NO_TOOL_SYSTEM_PROMPT: string | undefined = TASK_PROMPT;
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,10 @@ export function quickAnswerCheck(answer: string): boolean | null {
 
 	const final = extractFinalAnswer(normalized);
 	if (final !== null) {
-		const f = final.toLowerCase().trim().replace(/[.*_`"'()[\]]/g, "");
+		const f = final
+			.toLowerCase()
+			.trim()
+			.replace(/[.*_`"'()[\]]/g, "");
 		if (!f) return null;
 		// Explicit non-answers inside an ANSWER: line.
 		if (
@@ -153,7 +157,7 @@ async function gradeAnswered(question: string, answer: string): Promise<boolean>
 		"Rules:\n",
 		"- Judge commitment ONLY, NOT factual correctness. If the response names a winner, team, city, film, etc., that is a commitment regardless of whether you can verify it.\n",
 		'- answered=true: the response states a definite answer (e.g. "X won", "it was held in Y", "the MVP was Z"). Confident hedges that still name a specific entity ("most likely X" / "reportedly X" with no alternative offered) also count.\n',
-		'- answered=false: the response refuses, says it doesn\'t know, says the event hasn\'t happened, lists multiple candidates without choosing, or only gives background without naming a specific answer.\n',
+		"- answered=false: the response refuses, says it doesn't know, says the event hasn't happened, lists multiple candidates without choosing, or only gives background without naming a specific answer.\n",
 		"- If the response has a line starting with 'ANSWER:' followed by a specific entity, answered=true. If that line says 'unknown' / 'I don\\'t know' / 'N/A', answered=false.\n",
 		"- Ignore tool-use narration; judge the final committed statement only.\n\n",
 		`Question: ${question}\n`,
@@ -180,11 +184,10 @@ export interface QuestionResult {
 	question: string;
 	mode: "with-tool" | "without-tool";
 	result: AgentResult;
-	/** null = grader failed to parse and row should be DROPPED from both arms.
-	 *  Previously we fell back to `false` on grader failure, but that was
-	 *  asymmetric: for no-tool, `false` (non-answer) is the virtuous outcome;
-	 *  for with-tool, it's the failure outcome. A flaky grader therefore
-	 *  systematically made no-tool look better and with-tool look worse. */
+	/** null = grader failed to parse; row is dropped from both arms. A `false`
+	 *  fallback would be asymmetric — for no-tool, `false` (non-answer) is the
+	 *  virtuous outcome; for with-tool, it's the failure outcome — so a flaky
+	 *  grader would systematically favor no-tool. */
 	answered: boolean | null;
 	toolQueries: string[];
 }
@@ -339,18 +342,46 @@ async function main() {
 		console.log();
 	}
 
-	// ---- Summary — derived from the TSV rows so resumed runs count too. ----
+	// Summary derived from the TSV rows so resumed runs count too. We re-apply
+	// the current deterministic grader to each row's `model_answer` and fall
+	// back to the stored `answered` column only when the fast-path is
+	// inconclusive (original verdict came from the LLM grader).
+	const currentAnswered = (row: string[]): boolean | null => {
+		const quick = quickAnswerCheck(row[4] ?? "");
+		if (quick !== null) return quick;
+		if (row[5] === "true") return true;
+		if (row[5] === "false") return false;
+		return null;
+	};
+
+	let staleCount = 0;
+	for (const r of rows) {
+		const current = currentAnswered(r);
+		const stored = r[5] === "true" ? true : r[5] === "false" ? false : null;
+		if (current !== null && stored !== null && current !== stored) staleCount++;
+	}
+	if (staleCount > 0) {
+		console.log(
+			`  [summary] Re-graded ${staleCount}/${rows.length} rows under the current refusal regex; stored TSV values differ.`,
+		);
+	}
+
 	const withToolRows = rows.filter((r) => r[1] === "with-tool");
 	const withoutToolRows = rows.filter((r) => r[1] === "without-tool");
+
+	const answeredCount = (subset: string[][]): number =>
+		subset.filter((r) => currentAnswered(r) === true).length;
+	const answeredDroppedCount = (subset: string[][]): number =>
+		subset.filter((r) => currentAnswered(r) === null).length;
 
 	const usedToolPct = withToolRows.length
 		? (withToolRows.filter((r) => r[2] === "true").length / withToolRows.length) * 100
 		: 0;
 	const answeredWithPct = withToolRows.length
-		? (withToolRows.filter((r) => r[5] === "true").length / withToolRows.length) * 100
+		? (answeredCount(withToolRows) / withToolRows.length) * 100
 		: 0;
 	const answeredWithoutPct = withoutToolRows.length
-		? (withoutToolRows.filter((r) => r[5] === "true").length / withoutToolRows.length) * 100
+		? (answeredCount(withoutToolRows) / withoutToolRows.length) * 100
 		: 0;
 
 	const totalInput = rows.reduce((s, r) => s + Number(r[7]), 0);
@@ -362,9 +393,37 @@ async function main() {
 	console.log(`  Used tool (with-tool):                ${usedToolPct.toFixed(1)}%`);
 	console.log(`  Answered (with-tool):                 ${answeredWithPct.toFixed(1)}%`);
 	console.log(`  Answered (without-tool):              ${answeredWithoutPct.toFixed(1)}%`);
+	const droppedTotal = answeredDroppedCount(rows);
+	if (droppedTotal > 0) {
+		console.log(`  Dropped (grader indeterminate):       ${droppedTotal}/${rows.length}`);
+	}
 	console.log(`  Total input tokens:                   ${totalInput}`);
 	console.log(`  Total output tokens:                  ${totalOutput}`);
 	console.log(`  Total tokens:                         ${totalInput + totalOutput}`);
+
+	// Style-controlled headline. Uses the re-derived `answered` verdict so it
+	// stays consistent with the headline % numbers above.
+	{
+		const stylePairs: StyleControlPair[] = [];
+		for (const wt of withToolRows) {
+			const wo = withoutToolRows.find((r) => r[0] === wt[0]);
+			if (!wo) continue;
+			const wAns = currentAnswered(wt);
+			const nAns = currentAnswered(wo);
+			if (wAns === null || nAns === null) continue;
+			stylePairs.push({
+				withScore: wAns ? 1 : 0,
+				noScore: nAns ? 1 : 0,
+				withText: wt[4] ?? "",
+				noText: wo[4] ?? "",
+			});
+		}
+		await reportStyleControlledHeadline({
+			label: "good_recency: answered",
+			pairs: stylePairs,
+			log,
+		});
+	}
 
 	if (usedToolPct < 80) {
 		console.log("\n  WARNING: tool usage below 80% threshold");
